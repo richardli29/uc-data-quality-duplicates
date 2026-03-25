@@ -1,0 +1,16 @@
+command:
+  - "python"
+  - "-m"
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+# Update these for your workspace. Must match databricks.yml target variables.
+env:
+  - name: CATALOG_NAME
+    value: "classic_stable_j3egkl_catalog"
+  - name: WAREHOUSE_ID
+    value: "ba6bf944ec7bf0ff"

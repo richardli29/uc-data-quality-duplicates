@@ -1,0 +1,44 @@
+bundle:
+  name: dfe-data-quality
+
+variables:
+  catalog_name:
+    description: Unity Catalog catalog to scan for data quality analysis
+    default: classic_stable_j3egkl_catalog
+  warehouse_id:
+    description: SQL warehouse ID used for row-count and sample-data queries
+    default: ba6bf944ec7bf0ff
+
+resources:
+  apps:
+    dfe_data_quality:
+      name: dfe-data-quality
+      description: >
+        Unity Catalog Data Quality Explorer — scans metadata, detects duplicate
+        datasets across schemas, recommends gold-standard tables, and surfaces
+        group-level permissions.
+      source_code_path: .
+
+targets:
+  dev:
+    default: true
+    workspace:
+      host: https://fevm-classic-stable-j3egkl.cloud.databricks.com
+    variables:
+      catalog_name: classic_stable_j3egkl_catalog
+      warehouse_id: ba6bf944ec7bf0ff
+
+  # To deploy to another workspace:
+  # 1. Add a new target below with your workspace host
+  # 2. Update app.yaml env values to match your catalog and warehouse
+  # 3. Run: databricks bundle deploy --target <name>
+  # 4. Run: databricks apps deploy dfe-data-quality \
+  #           --source-code-path <bundle_workspace_path>/files \
+  #           --profile <profile>
+  #
+  # prod:
+  #   workspace:
+  #     host: https://<WORKSPACE>.cloud.databricks.com
+  #   variables:
+  #     catalog_name: <YOUR_CATALOG>
+  #     warehouse_id: <YOUR_WAREHOUSE_ID>
