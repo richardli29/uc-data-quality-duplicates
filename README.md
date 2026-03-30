@@ -1,15 +1,15 @@
-# UC Data Quality Explorer
+# UC Data Duplicates
 
 A Databricks App that scans Unity Catalog metadata to find duplicate datasets across schemas, recommends gold-standard tables, and surfaces group-level access permissions — helping data architects and engineers clean up data sprawl before it reaches analysts.
 
-## What it does
+## Features
 
 | Feature | Description |
 |---|---|
-| **Catalog Scanner** | Reads every schema and table in a catalog, including column types, row counts, comments, and update timestamps. |
-| **Permissions Viewer** | Fetches schema- and catalog-level grants (via the UC Permissions API) so you can see which groups have READ / WRITE access to each asset. |
-| **Duplicate Detection** | Uses Jaccard column-name similarity, type compatibility scoring, and fuzzy table-name matching to cluster tables that represent the same entity across schemas. |
-| **Gold Standard Scoring** | Ranks each table in a duplicate group on completeness, documentation, naming convention, schema tier, freshness, and row count to recommend the "gold" dataset analysts should use. |
+| **Catalog Scanner** | Reads every schema and table in a catalog — columns, types, row counts, comments, timestamps. |
+| **Permissions Viewer** | Shows which groups and users have READ / WRITE access to each table (via UC Permissions API). |
+| **Duplicate Detection** | Clusters tables that represent the same entity using column-name Jaccard similarity, type compatibility, and fuzzy table-name matching. |
+| **Gold Standard Scoring** | Ranks each duplicate on completeness, documentation, naming convention, schema tier, freshness, and row count to recommend the canonical dataset. |
 | **Table Comparison** | Side-by-side column diff, permissions diff, and sample data for any two tables. |
 
 ## Architecture
@@ -43,7 +43,7 @@ A Databricks App that scans Unity Catalog metadata to find duplicate datasets ac
 ## Project structure
 
 ```
-dfe-data-quality-app/
+uc-data-duplicates/
 ├── databricks.yml          # DAB bundle config (targets, variables)
 ├── app.yaml                # App runtime config (command, env vars)
 ├── app.py                  # FastAPI entrypoint
@@ -58,46 +58,46 @@ dfe-data-quality-app/
 │       ├── duplicates.py   # /api/duplicates/*
 │       └── compare.py      # /api/compare/*
 ├── frontend/
-│   └── dist/
-│       ├── index.html
-│       └── assets/
-│           ├── style.css
-│           ├── api.js
-│           └── app.js
+│   └── dist/               # Static SPA (HTML/CSS/JS, no build step)
 └── scripts/
     ├── deploy.sh           # One-command deploy (bundle + app source)
-    └── generate_data.py    # Test data generator (20 tables, 5 schemas)
+    └── generate_data.py    # Optional test data generator
 ```
 
 ## Prerequisites
 
 - [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) >= 0.230
 - Python 3.10+
-- A Databricks workspace with Unity Catalog enabled
-- A SQL warehouse (Serverless or Pro)
-- Permissions to create schemas, tables, and apps in the target catalog
+- A Databricks workspace with:
+  - Unity Catalog enabled
+  - A SQL warehouse (Serverless or Pro)
+  - Permission to create Apps
 
-## Quick start
+## Getting started
 
-### 1. Authenticate
+### 1. Clone and authenticate
 
 ```bash
+git clone <repo-url> && cd uc-data-duplicates
+
 databricks auth login --host https://<WORKSPACE>.cloud.databricks.com
 ```
 
-Or configure a named profile:
+### 2. Find your warehouse ID
 
 ```bash
-databricks auth login \
-  --host https://<WORKSPACE>.cloud.databricks.com \
-  --profile my-workspace
+databricks warehouses list --output json | python3 -c "
+import json, sys
+for w in json.load(sys.stdin):
+    print(f'{w[\"id\"]}  {w[\"name\"]}  ({w[\"state\"]})')
+"
 ```
 
-### 2. Configure for your workspace
+### 3. Configure
 
-Two files need updating:
+Edit **two files** with your workspace details:
 
-**`app.yaml`** — set `CATALOG_NAME` and `WAREHOUSE_ID` in the `env` section:
+**`app.yaml`** — the app reads these at runtime:
 
 ```yaml
 env:
@@ -107,7 +107,7 @@ env:
     value: "abc123def456"
 ```
 
-**`databricks.yml`** — set matching values in the target:
+**`databricks.yml`** — the bundle uses these for deployment:
 
 ```yaml
 targets:
@@ -119,24 +119,15 @@ targets:
       warehouse_id: abc123def456
 ```
 
-You can find your SQL warehouse ID in the Databricks UI under **SQL Warehouses**, or with:
+### 4. (Optional) Generate test data
+
+Creates 20 education-themed tables across 5 schemas (bronze, silver, gold, team_analytics, team_reporting) with deliberate duplicates:
 
 ```bash
-databricks warehouses list
-```
-
-### 3. (Optional) Generate test data
-
-If you want to create the demo education datasets (20 tables across 5 schemas with deliberate duplicates):
-
-```bash
-python scripts/generate_data.py \
+python3 scripts/generate_data.py \
   --catalog my_catalog \
-  --warehouse abc123def456 \
-  --profile my-workspace
+  --warehouse abc123def456
 ```
-
-This creates:
 
 | Schema | Tables | Purpose |
 |---|---|---|
@@ -146,91 +137,73 @@ This creates:
 | `team_analytics` | `student_data`, `school_info`, `exam_scores`, `student_attendance` | Duplicate set with renamed columns |
 | `team_reporting` | `pupils`, `school_directory`, `assessment_results`, `attendance_register` | Another duplicate set with different naming |
 
-The script also applies table comments and grants to workspace groups (`data_engineers`, `data_analysts`, `reporting_team`).
-
-### 4. Deploy
-
-The easiest path is the one-command deploy script:
+### 5. Deploy
 
 ```bash
 ./scripts/deploy.sh
 ```
 
-Or with a named profile:
+Or step by step:
 
 ```bash
-./scripts/deploy.sh --profile my-workspace
-```
-
-This runs `databricks bundle deploy` (syncs files + creates the app resource) followed by `databricks apps deploy` (deploys the source code and starts the app).
-
-**Manual deploy** (if you prefer step by step):
-
-```bash
-# 1. Validate
 databricks bundle validate
-
-# 2. Deploy bundle (syncs files to workspace, creates/updates app resource)
 databricks bundle deploy
-
-# 3. Start the app if stopped
-databricks apps start dfe-data-quality
-
-# 4. Deploy source code from the bundle's workspace path
-databricks apps deploy dfe-data-quality \
-  --source-code-path /Workspace/Users/<you>/.bundle/dfe-data-quality/dev/files
+databricks apps start uc-data-duplicates
+databricks apps deploy uc-data-duplicates \
+  --source-code-path /Workspace/Users/<you>/.bundle/uc-data-duplicates/dev/files
 ```
 
-### 5. Grant permissions to the app service principal
+### 6. Grant permissions to the app service principal
 
-The first deployment creates a new service principal for the app. Find its ID in the deploy output or with:
+The deployment creates a service principal. Find its ID:
 
 ```bash
-databricks apps get dfe-data-quality | grep service_principal_client_id
+databricks apps get uc-data-duplicates --output json | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d['service_principal_client_id'])
+"
 ```
 
-Then grant it access to the catalog and warehouse — see the [App permissions](#app-permissions) section below.
-
-### 6. Open the app
-
-```bash
-databricks apps get dfe-data-quality
-```
-
-The `url` field contains the app URL. The app requires workspace authentication — log into the workspace in your browser first, then open the app URL.
-
-## App permissions
-
-The Databricks App runs under a **service principal** that is automatically created during deployment. This SP needs:
-
-| Permission | Scope | Reason |
-|---|---|---|
-| `USE CATALOG` | Target catalog | Browse schemas |
-| `USE SCHEMA` | All schemas in the catalog | List tables |
-| `SELECT` | All schemas in the catalog | Read table metadata and sample data |
-| `MANAGE` | Target catalog | Read permission grants via the UC Permissions API |
-| `CAN_USE` | SQL warehouse | Execute row-count and sample-data queries |
-
-Grant these after the first deployment:
+Then grant it access (replace `<SP_ID>` and `<CATALOG>`):
 
 ```sql
--- Replace with your catalog, SP ID is in the deployment logs
-GRANT USE CATALOG ON CATALOG my_catalog TO `<service-principal-uuid>`;
-GRANT USE SCHEMA ON SCHEMA my_catalog.* TO `<service-principal-uuid>`;
-GRANT SELECT ON SCHEMA my_catalog.* TO `<service-principal-uuid>`;
-GRANT MANAGE ON CATALOG my_catalog TO `<service-principal-uuid>`;
+GRANT USE CATALOG ON CATALOG <CATALOG> TO `<SP_ID>`;
+GRANT USE SCHEMA ON SCHEMA <CATALOG>.* TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA <CATALOG>.* TO `<SP_ID>`;
+GRANT MANAGE ON CATALOG <CATALOG> TO `<SP_ID>`;
 ```
 
-For the warehouse, use the Permissions API or the UI to grant `CAN_USE` to the service principal.
+And grant `CAN_USE` on the SQL warehouse via the UI or:
+
+```bash
+databricks api patch /api/2.0/permissions/sql/warehouses/<WAREHOUSE_ID> \
+  --json '{"access_control_list":[{"service_principal_name":"<SP_ID>","permission_level":"CAN_USE"}]}'
+```
+
+### 7. Open the app
+
+```bash
+databricks apps get uc-data-duplicates
+```
+
+Open the `url` from the output in your browser. You must be logged into the workspace first.
+
+## Using the app
+
+1. **Dashboard** — click **Scan Catalog** to fetch all metadata. Stat cards show schema, table, and column counts plus detected duplicate groups.
+2. **Catalog Explorer** — browse the schema tree, click a table to see columns, row count, owner, comments, and group permissions.
+3. **Duplicates** — view duplicate clusters with similarity scores and gold-standard badges. Adjust the threshold slider and re-detect.
+4. **Compare** — pick any two tables for a side-by-side column diff, permissions comparison, and sample data preview.
 
 ## API reference
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/catalog/scan` | Trigger a full catalog scan (metadata + permissions + row counts) |
+| `GET` | `/api/catalog/scan` | Full catalog scan (metadata + permissions + row counts) |
 | `GET` | `/api/catalog/schemas` | List scanned schemas |
 | `GET` | `/api/catalog/tables?schema=gold` | List tables, optionally filtered by schema |
-| `GET` | `/api/catalog/table/{schema}/{table}` | Get full metadata for one table |
+| `GET` | `/api/catalog/table/{schema}/{table}` | Full metadata for one table |
 | `GET` | `/api/duplicates/detect?threshold=0.5` | Detect duplicate groups above the similarity threshold |
 | `GET` | `/api/duplicates/groups` | Return cached duplicate groups |
 | `GET` | `/api/compare/{s1}/{t1}/{s2}/{t2}` | Column + permissions diff between two tables |
@@ -240,23 +213,27 @@ For the warehouse, use the Permissions API or the UI to grant `CAN_USE` to the s
 
 ### Similarity weights
 
-The duplicate detection algorithm uses three signals combined with configurable weights (in `server/duplicates.py`):
+Edit `server/duplicates.py` — the `detect_duplicates` function accepts:
 
-- **Column similarity** (50%) — Jaccard index on canonical column names (with synonym mapping)
-- **Type similarity** (30%) — Proportion of shared columns with compatible types
-- **Name similarity** (20%) — Token-based Jaccard on table names, stripping `raw_`, `dim_`, `fact_` prefixes
+- `col_weight` (default 0.50) — Jaccard index on canonical column names
+- `type_weight` (default 0.30) — proportion of shared columns with compatible types
+- `name_weight` (default 0.20) — token-based Jaccard on table names
 
 ### Gold standard scoring
 
-Each table in a duplicate group is scored (in `server/duplicates.py`) on:
+Each table in a duplicate group is scored on:
 
 - Column completeness (25 pts)
 - Documentation / comments (20 pts)
 - Naming convention — `dim_` / `fact_` prefix (15 pts)
 - Schema tier — `gold` schema (20 pts)
-- Freshness — most recently updated (10 pts)
-- Row count — largest dataset (10 pts)
+- Freshness (10 pts)
+- Row count (10 pts)
 
-### Adding synonym mappings
+### Synonym mappings
 
-Edit the `_SYNONYMS` dictionary in `server/duplicates.py` to add domain-specific column name mappings. This improves cross-team duplicate detection when teams use different naming conventions for the same fields.
+Edit the `_SYNONYMS` dictionary in `server/duplicates.py` to add domain-specific column name mappings (e.g. `student_id` = `learner_id` = `pupil_id`). This improves duplicate detection when teams use different naming conventions.
+
+## License
+
+MIT

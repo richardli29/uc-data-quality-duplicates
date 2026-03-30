@@ -8,9 +8,8 @@ command:
   - "--port"
   - "8000"
 
-# Update these for your workspace. Must match databricks.yml target variables.
 env:
   - name: CATALOG_NAME
-    value: "classic_stable_j3egkl_catalog"
+    value: "<YOUR_CATALOG>"
   - name: WAREHOUSE_ID
-    value: "ba6bf944ec7bf0ff"
+    value: "<YOUR_WAREHOUSE_ID>"

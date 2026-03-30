@@ -39,14 +39,20 @@ databricks bundle deploy --target "$TARGET" $PROFILE_FLAG
 
 USER_EMAIL=$(databricks auth env $PROFILE_FLAG 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('env',{}).get('DATABRICKS_USER',''))" 2>/dev/null || echo "")
-BUNDLE_PATH="/Workspace/Users/${USER_EMAIL}/.bundle/dfe-data-quality/${TARGET}/files"
+APP_NAME="uc-data-duplicates"
+BUNDLE_NAME="uc-data-duplicates"
+BUNDLE_PATH="/Workspace/Users/${USER_EMAIL}/.bundle/${BUNDLE_NAME}/${TARGET}/files"
+
+echo ""
+echo "=== Starting app ==="
+databricks apps start "$APP_NAME" $PROFILE_FLAG 2>/dev/null || true
 
 echo ""
 echo "=== Deploying app source from: $BUNDLE_PATH ==="
-databricks apps deploy dfe-data-quality --source-code-path "$BUNDLE_PATH" $PROFILE_FLAG
+databricks apps deploy "$APP_NAME" --source-code-path "$BUNDLE_PATH" $PROFILE_FLAG
 
 echo ""
 echo "=== Deployment complete ==="
-databricks apps get dfe-data-quality $PROFILE_FLAG 2>/dev/null \
+databricks apps get "$APP_NAME" $PROFILE_FLAG 2>/dev/null \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'App URL: {d.get(\"url\",\"pending\")}')" 2>/dev/null \
-  || echo "(Check app status with: databricks apps get dfe-data-quality)"
+  || echo "(Check app status with: databricks apps get $APP_NAME)"
