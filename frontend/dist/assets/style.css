@@ -562,3 +562,62 @@ select:focus, input:focus { outline: none; border-color: var(--accent); }
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
+
+/* ===== Catalog Chips ===== */
+.catalog-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--transition);
+}
+
+.catalog-chip:hover { border-color: var(--accent); }
+
+.catalog-chip strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.catalog-chip-detail {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.catalog-chip-error {
+  border-color: var(--red);
+}
+
+.catalog-chip-error strong { color: var(--red); }
+
+/* ===== Catalog Tree (multi-catalog) ===== */
+.tree-catalog { margin-bottom: 8px; }
+
+.tree-catalog-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: var(--radius);
+  transition: background var(--transition);
+}
+
+.tree-catalog-name:hover { background: var(--accent-soft); }
+
+.tree-catalog-name .count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.tree-catalog-children { padding-left: 8px; }
+
+.tree-toggle { user-select: none; }

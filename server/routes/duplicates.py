@@ -4,27 +4,18 @@ from fastapi.responses import JSONResponse
 
 from server.scanner import scanner
 from server.duplicates import detect_duplicates
-from server.config import CATALOG_NAME
 
 router = APIRouter(prefix="/api/duplicates", tags=["duplicates"])
 
 _cached_groups: list | None = None
 
 
-def _resolve_catalog(catalog: str | None) -> str:
-    return catalog or scanner.current_catalog or CATALOG_NAME
-
-
 @router.get("/detect")
-def detect(
-    threshold: float = Query(0.5, ge=0.1, le=1.0),
-    catalog: str | None = Query(None),
-):
+def detect(threshold: float = Query(0.5, ge=0.1, le=1.0)):
     global _cached_groups
     try:
-        cat = _resolve_catalog(catalog)
-        if scanner.needs_scan(cat):
-            scanner.scan(cat)
+        if not scanner.is_scanned:
+            scanner.scan_all()
         tables = scanner.get_all_tables_raw()
         groups = detect_duplicates(tables, threshold=threshold)
         _cached_groups = groups

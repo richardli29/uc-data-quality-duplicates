@@ -12,9 +12,7 @@ const API = {
 
   listCatalogs() { return this.get('/catalog/list'); },
 
-  scanCatalog(catalog) {
-    return this.get('/catalog/scan' + this._qs({ catalog }));
-  },
+  scanAll() { return this.get('/catalog/scan-all'); },
 
   getSchemas(catalog) {
     return this.get('/catalog/schemas' + this._qs({ catalog }));
@@ -24,21 +22,21 @@ const API = {
     return this.get('/catalog/tables' + this._qs({ schema, catalog }));
   },
 
-  getTable(schema, table, catalog) {
-    return this.get(`/catalog/table/${schema}/${table}` + this._qs({ catalog }));
+  getTable(catalog, schema, table) {
+    return this.get(`/catalog/table/${catalog}/${schema}/${table}`);
   },
 
-  detectDuplicates(threshold = 0.5, catalog) {
-    return this.get('/duplicates/detect' + this._qs({ threshold, catalog }));
+  detectDuplicates(threshold = 0.5) {
+    return this.get('/duplicates/detect' + this._qs({ threshold }));
   },
 
   getGroups() { return this.get('/duplicates/groups'); },
 
-  compareTables(s1, t1, s2, t2, catalog) {
-    return this.get(`/compare/${s1}/${t1}/${s2}/${t2}` + this._qs({ catalog }));
+  compareTables(cat1, s1, t1, cat2, s2, t2) {
+    return this.get(`/compare/${cat1}/${s1}/${t1}/${cat2}/${s2}/${t2}`);
   },
 
-  getSample(schema, table, catalog) {
-    return this.get(`/compare/sample/${schema}/${table}` + this._qs({ catalog }));
+  getSample(catalog, schema, table) {
+    return this.get(`/compare/sample/${catalog}/${schema}/${table}`);
   },
 };

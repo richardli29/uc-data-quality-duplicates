@@ -4,6 +4,7 @@ and scores them for gold-standard recommendation."""
 
 from __future__ import annotations
 import re
+from collections import Counter
 from dataclasses import dataclass, field, asdict
 from itertools import combinations
 
@@ -124,6 +125,7 @@ class DuplicatePair:
 @dataclass
 class DuplicateGroup:
     group_id: int
+    label: str
     tables: list[str]
     pairs: list[DuplicatePair]
     gold_standard: str | None = None
@@ -132,6 +134,7 @@ class DuplicateGroup:
     def to_dict(self):
         return {
             "group_id": self.group_id,
+            "label": self.label,
             "tables": self.tables,
             "pairs": [asdict(p) for p in self.pairs],
             "gold_standard": self.gold_standard,
@@ -150,8 +153,7 @@ def detect_duplicates(
     pairs: list[DuplicatePair] = []
 
     for ta, tb in combinations(tables, 2):
-        # Skip tables in the same schema (bronze vs silver of same entity is expected)
-        if ta.schema == tb.schema:
+        if ta.catalog == tb.catalog and ta.schema == tb.schema:
             continue
 
         cols_a = [c.name for c in ta.columns]
@@ -184,6 +186,30 @@ def detect_duplicates(
     return groups
 
 
+def _derive_group_label(full_names: list[str]) -> str:
+    """Derive a human-readable label from the table names in a duplicate group.
+
+    Tokenises each table name (stripping common prefixes like raw_, dim_, fact_),
+    then picks the tokens that appear across the most tables.
+    """
+    short_names = [n.split(".")[-1] for n in full_names]
+    token_sets = [_tokenize_name(n) for n in short_names]
+
+    counts: Counter[str] = Counter()
+    for tokens in token_sets:
+        for t in tokens:
+            counts[t] += 1
+
+    min_freq = max(2, len(full_names) * 0.4)
+    common = [tok for tok, cnt in counts.most_common() if cnt >= min_freq]
+
+    if common:
+        return " ".join(common[:3]).replace("_", " ").title()
+
+    shortest = min(short_names, key=len)
+    return re.sub(r"[_\-]+", " ", shortest).title()
+
+
 def _cluster_pairs(pairs: list[DuplicatePair]) -> list[DuplicateGroup]:
     """Union-find clustering of table pairs into groups."""
     parent: dict[str, str] = {}
@@ -212,9 +238,11 @@ def _cluster_pairs(pairs: list[DuplicatePair]) -> list[DuplicateGroup]:
     groups = []
     for i, (_, members) in enumerate(sorted(clusters.items())):
         group_pairs = [p for p in pairs if p.table_a in members or p.table_b in members]
+        sorted_members = sorted(members)
         groups.append(DuplicateGroup(
             group_id=i + 1,
-            tables=sorted(members),
+            label=_derive_group_label(sorted_members),
+            tables=sorted_members,
             pairs=sorted(group_pairs, key=lambda p: -p.composite_score),
         ))
 

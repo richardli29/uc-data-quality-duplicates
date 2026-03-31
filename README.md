@@ -6,9 +6,9 @@ A Databricks App that scans Unity Catalog metadata across any accessible catalog
 
 | Feature | Description |
 |---|---|
-| **Multi-Catalog Scanner** | Lists all accessible catalogs and scans any one — schemas, tables, columns, types, row counts, comments, timestamps. |
+| **Multi-Catalog Scanner** | Scans every accessible catalog in one click — schemas, tables, columns, types, row counts, comments, timestamps. Shows which catalogs were scanned with per-catalog breakdowns. |
 | **Permissions Viewer** | Shows which groups and users have READ / WRITE access to each table via `system.information_schema` — no `MANAGE` privilege needed. |
-| **Duplicate Detection** | Clusters tables that represent the same entity using column-name Jaccard similarity, type compatibility, and fuzzy table-name matching. |
+| **Duplicate Detection** | Clusters tables that represent the same entity using column-name Jaccard similarity, type compatibility, and fuzzy table-name matching. Groups are labelled by the common entity name (e.g. "Students", "Exam Results") rather than generic IDs. |
 | **Gold Standard Scoring** | Ranks each duplicate on completeness, documentation, naming convention, schema tier, freshness, and row count to recommend the canonical dataset. |
 | **Table Comparison** | Side-by-side column diff, permissions diff, and sample data for any two tables. |
 
@@ -174,7 +174,7 @@ targets:
       warehouse_id: abc123def456
 ```
 
-> **Note:** `CATALOG_NAME` is no longer required. The app discovers all accessible catalogs automatically and lets users pick from a dropdown.
+> **Note:** `CATALOG_NAME` is not required. The app discovers and scans all accessible catalogs automatically.
 
 ### 4. (Optional) Generate test data
 
@@ -260,26 +260,24 @@ Open the `url` from the output in your browser. You must be logged into the work
 
 ## Using the app
 
-1. **Dashboard** — select a catalog from the dropdown, then click **Scan Catalog** to fetch all metadata. Stat cards show schema, table, and column counts plus detected duplicate groups.
-2. **Catalog Explorer** — browse the schema tree, click a table to see columns, row count, owner, comments, and group permissions.
-3. **Duplicates** — view duplicate clusters with similarity scores and gold-standard badges. Adjust the threshold slider and re-detect.
-4. **Compare** — pick any two tables for a side-by-side column diff, permissions comparison, and sample data preview.
+1. **Dashboard** — click **Scan All Catalogs** to scan every accessible catalog at once. Stat cards show total schemas, tables, and columns plus per-catalog breakdowns and detected duplicate groups.
+2. **Catalog Explorer** — browse all catalogs in a tree (catalog > schema > table), click a table to see columns, row count, owner, comments, and group permissions.
+3. **Duplicates** — view duplicate clusters labelled by entity name (e.g. "Students", "Exam Results") with similarity scores and gold-standard badges. Adjust the threshold slider and re-detect. Cross-catalog duplicates are detected too.
+4. **Compare** — pick any two tables (from any catalog) for a side-by-side column diff, permissions comparison, and sample data preview.
 
 ## API reference
-
-All endpoints accept an optional `?catalog=<name>` query parameter. If omitted, the last-scanned catalog is used.
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/catalog/list` | List all accessible catalogs |
-| `GET` | `/api/catalog/scan?catalog=X` | Full catalog scan (metadata + permissions + row counts) |
-| `GET` | `/api/catalog/schemas?catalog=X` | List scanned schemas |
-| `GET` | `/api/catalog/tables?schema=gold&catalog=X` | List tables, optionally filtered by schema |
-| `GET` | `/api/catalog/table/{schema}/{table}?catalog=X` | Full metadata for one table |
-| `GET` | `/api/duplicates/detect?threshold=0.5&catalog=X` | Detect duplicate groups above the similarity threshold |
+| `GET` | `/api/catalog/scan-all` | Scan all catalogs (metadata + permissions + row counts) |
+| `GET` | `/api/catalog/schemas?catalog=X` | List scanned schemas (optional catalog filter) |
+| `GET` | `/api/catalog/tables?schema=gold&catalog=X` | List tables, optionally filtered by schema/catalog |
+| `GET` | `/api/catalog/table/{catalog}/{schema}/{table}` | Full metadata for one table |
+| `GET` | `/api/duplicates/detect?threshold=0.5` | Detect duplicate groups above the similarity threshold |
 | `GET` | `/api/duplicates/groups` | Return cached duplicate groups |
-| `GET` | `/api/compare/{s1}/{t1}/{s2}/{t2}?catalog=X` | Column + permissions diff between two tables |
-| `GET` | `/api/compare/sample/{schema}/{table}?catalog=X` | Fetch 10 sample rows from a table |
+| `GET` | `/api/compare/{cat1}/{s1}/{t1}/{cat2}/{s2}/{t2}` | Column + permissions diff between two tables |
+| `GET` | `/api/compare/sample/{catalog}/{schema}/{table}` | Fetch 10 sample rows from a table |
 
 ## Customisation
 

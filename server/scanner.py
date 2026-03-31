@@ -14,7 +14,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-from server.config import get_workspace_client, CATALOG_NAME, WAREHOUSE_ID
+from server.config import get_workspace_client, WAREHOUSE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class CatalogScanner:
         self._tables: list[TableInfo] = []
         self._schemas: list[SchemaInfo] = []
         self._scanned = False
-        self._current_catalog: str | None = None
+        self._scanned_catalogs: list[str] = []
 
     @property
     def client(self):
@@ -86,15 +86,8 @@ class CatalogScanner:
         return self._scanned
 
     @property
-    def current_catalog(self) -> str | None:
-        return self._current_catalog
-
-    def needs_scan(self, catalog: str | None = None) -> bool:
-        if not self._scanned:
-            return True
-        if catalog and catalog != self._current_catalog:
-            return True
-        return False
+    def scanned_catalogs(self) -> list[str]:
+        return list(self._scanned_catalogs)
 
     def list_catalogs(self) -> list[dict]:
         """Return all accessible catalogs, filtering out system/sharing catalogs."""
@@ -135,10 +128,45 @@ class CatalogScanner:
             logger.debug(f"SQL query failed: {e}")
         return None
 
-    def scan(self, catalog: str = CATALOG_NAME) -> dict:
-        logger.info(f"Scanning catalog: {catalog}")
+    def scan_all(self) -> dict:
+        """Scan every accessible catalog and accumulate results."""
+        self.reset_client()
         self._tables = []
         self._schemas = []
+        self._scanned_catalogs = []
+
+        catalogs = self.list_catalogs()
+        per_catalog = {}
+
+        for cat_info in catalogs:
+            name = cat_info["name"]
+            try:
+                stats = self._scan_one(name)
+                per_catalog[name] = stats
+                self._scanned_catalogs.append(name)
+            except Exception as e:
+                logger.warning(f"Failed to scan catalog {name}: {e}")
+                per_catalog[name] = {"error": str(e), "schema_count": 0,
+                                     "table_count": 0, "column_count": 0}
+
+        self._scanned = True
+
+        return {
+            "catalogs_scanned": list(self._scanned_catalogs),
+            "per_catalog": per_catalog,
+            "total": {
+                "catalog_count": len(self._scanned_catalogs),
+                "schema_count": len(self._schemas),
+                "table_count": len(self._tables),
+                "column_count": sum(len(t.columns) for t in self._tables),
+            },
+        }
+
+    def _scan_one(self, catalog: str) -> dict:
+        """Scan a single catalog and append results to the shared lists."""
+        logger.info(f"Scanning catalog: {catalog}")
+        local_tables: list[TableInfo] = []
+        local_schemas: list[SchemaInfo] = []
 
         schemas = list(self.client.schemas.list(catalog_name=catalog))
         for s in schemas:
@@ -156,7 +184,7 @@ class CatalogScanner:
                 catalog_name=catalog, schema_name=s.name
             ))
             schema_info.table_count = len(tables)
-            self._schemas.append(schema_info)
+            local_schemas.append(schema_info)
 
             for t in tables:
                 cols = []
@@ -183,7 +211,7 @@ class CatalogScanner:
                                 pass
                             break
 
-                table_info = TableInfo(
+                local_tables.append(TableInfo(
                     catalog=catalog,
                     schema=s.name,
                     name=t.name,
@@ -195,22 +223,22 @@ class CatalogScanner:
                     updated_at=t.updated_at,
                     owner=t.owner,
                     comment=t.comment,
-                )
-                self._tables.append(table_info)
+                ))
 
-        self._fetch_permissions(catalog)
-        self._fetch_row_counts(catalog)
-        self._scanned = True
-        self._current_catalog = catalog
+        self._fetch_permissions(catalog, local_tables)
+        self._fetch_row_counts(local_tables)
+
+        self._tables.extend(local_tables)
+        self._schemas.extend(local_schemas)
 
         return {
             "catalog": catalog,
-            "schema_count": len(self._schemas),
-            "table_count": len(self._tables),
-            "column_count": sum(len(t.columns) for t in self._tables),
+            "schema_count": len(local_schemas),
+            "table_count": len(local_tables),
+            "column_count": sum(len(t.columns) for t in local_tables),
         }
 
-    def _fetch_permissions(self, catalog: str):
+    def _fetch_permissions(self, catalog: str, tables: list[TableInfo]):
         """Fetch permissions from governance MVs, falling back to system.information_schema.
 
         Tries ``<catalog>.governance.catalog_privileges`` etc. first (materialized
@@ -222,14 +250,12 @@ class CatalogScanner:
         table_perms: dict[str, list[PermissionGrant]] = defaultdict(list)
         catalog_grants: list[PermissionGrant] = []
 
-        # Determine which source to use: governance MVs or system tables
         gov = f"{catalog}.governance"
-        sys = "system.information_schema"
+        sys_is = "system.information_schema"
         test = self._run_sql(f"SELECT 1 FROM {gov}.catalog_privileges LIMIT 1")
-        source = gov if test is not None else sys
-        logger.info(f"Permissions source: {source}")
+        source = gov if test is not None else sys_is
+        logger.info(f"Permissions source for {catalog}: {source}")
 
-        # --- catalog-level grants ---
         rows = self._run_sql(
             f"SELECT grantor, grantee, privilege_type "
             f"FROM {source}.catalog_privileges "
@@ -246,9 +272,8 @@ class CatalogScanner:
                     inherited_from=catalog,
                 ))
         else:
-            logger.info("catalog_privileges returned no rows")
+            logger.info(f"catalog_privileges returned no rows for {catalog}")
 
-        # --- schema-level grants ---
         rows = self._run_sql(
             f"SELECT grantor, grantee, privilege_type, schema_name "
             f"FROM {source}.schema_privileges "
@@ -265,7 +290,6 @@ class CatalogScanner:
                     inherited_from=f"{catalog}.{schema_name}",
                 ))
 
-        # --- table-level grants ---
         rows = self._run_sql(
             f"SELECT grantor, grantee, privilege_type, table_schema, table_name "
             f"FROM {source}.table_privileges "
@@ -282,8 +306,7 @@ class CatalogScanner:
                     inherited_from=f"{catalog}.{schema_name}.{table_name}",
                 ))
 
-        # Merge grants onto each table: table-level > schema-level > catalog-level
-        for table in self._tables:
+        for table in tables:
             merged: dict[str, PermissionGrant] = {}
 
             for g in catalog_grants:
@@ -322,13 +345,10 @@ class CatalogScanner:
 
             table.permissions = list(merged.values())
 
-    def _fetch_row_counts(self, catalog: str):
+    def _fetch_row_counts(self, tables: list[TableInfo]):
         """Fetch row counts for tables missing them via SQL."""
-        tables_needing_counts = [t for t in self._tables if t.row_count is None]
-        if not tables_needing_counts:
-            return
-
-        for table in tables_needing_counts:
+        needing = [t for t in tables if t.row_count is None]
+        for table in needing:
             rows = self._run_sql(f"SELECT count(*) as cnt FROM {table.full_name}")
             if rows:
                 try:
@@ -336,7 +356,10 @@ class CatalogScanner:
                 except (ValueError, TypeError, IndexError):
                     pass
 
-    def get_schemas(self) -> list[dict]:
+    def get_schemas(self, catalog: str | None = None) -> list[dict]:
+        schemas = self._schemas
+        if catalog:
+            schemas = [s for s in schemas if s.catalog == catalog]
         return [
             {
                 "catalog": s.catalog,
@@ -346,19 +369,27 @@ class CatalogScanner:
                 "owner": s.owner,
                 "comment": s.comment,
             }
-            for s in self._schemas
+            for s in schemas
         ]
 
-    def get_tables(self, schema: str | None = None) -> list[dict]:
+    def get_tables(self, schema: str | None = None, catalog: str | None = None) -> list[dict]:
         tables = self._tables
+        if catalog:
+            tables = [t for t in tables if t.catalog == catalog]
         if schema:
             tables = [t for t in tables if t.schema == schema]
         return [t.to_dict() for t in tables]
 
-    def get_table(self, schema: str, table: str) -> dict | None:
+    def get_table_by_full_name(self, catalog: str, schema: str, table: str) -> dict | None:
         for t in self._tables:
-            if t.schema == schema and t.name == table:
+            if t.catalog == catalog and t.schema == schema and t.name == table:
                 return t.to_dict()
+        return None
+
+    def get_table_raw(self, catalog: str, schema: str, table: str) -> TableInfo | None:
+        for t in self._tables:
+            if t.catalog == catalog and t.schema == schema and t.name == table:
+                return t
         return None
 
     def get_all_tables_raw(self) -> list[TableInfo]:

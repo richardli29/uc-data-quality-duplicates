@@ -3,13 +3,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from server.scanner import scanner
-from server.config import CATALOG_NAME
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
-
-
-def _resolve_catalog(catalog: str | None) -> str:
-    return catalog or scanner.current_catalog or CATALOG_NAME
 
 
 @router.get("/list")
@@ -24,12 +19,10 @@ def list_catalogs():
         )
 
 
-@router.get("/scan")
-def scan_catalog(catalog: str | None = Query(None)):
+@router.get("/scan-all")
+def scan_all():
     try:
-        cat = _resolve_catalog(catalog)
-        scanner.reset_client()
-        return scanner.scan(cat)
+        return scanner.scan_all()
     except Exception as e:
         return JSONResponse(
             status_code=500,
@@ -39,26 +32,23 @@ def scan_catalog(catalog: str | None = Query(None)):
 
 @router.get("/schemas")
 def list_schemas(catalog: str | None = Query(None)):
-    cat = _resolve_catalog(catalog)
-    if scanner.needs_scan(cat):
-        scanner.scan(cat)
-    return scanner.get_schemas()
+    if not scanner.is_scanned:
+        return []
+    return scanner.get_schemas(catalog)
 
 
 @router.get("/tables")
 def list_tables(schema: str | None = None, catalog: str | None = Query(None)):
-    cat = _resolve_catalog(catalog)
-    if scanner.needs_scan(cat):
-        scanner.scan(cat)
-    return scanner.get_tables(schema)
+    if not scanner.is_scanned:
+        return []
+    return scanner.get_tables(schema, catalog)
 
 
-@router.get("/table/{schema}/{table}")
-def get_table(schema: str, table: str, catalog: str | None = Query(None)):
-    cat = _resolve_catalog(catalog)
-    if scanner.needs_scan(cat):
-        scanner.scan(cat)
-    result = scanner.get_table(schema, table)
+@router.get("/table/{catalog}/{schema}/{table}")
+def get_table(catalog: str, schema: str, table: str):
+    if not scanner.is_scanned:
+        raise HTTPException(status_code=400, detail="No scan has been run yet")
+    result = scanner.get_table_by_full_name(catalog, schema, table)
     if result is None:
-        raise HTTPException(status_code=404, detail=f"Table {schema}.{table} not found")
+        raise HTTPException(status_code=404, detail=f"Table {catalog}.{schema}.{table} not found")
     return result

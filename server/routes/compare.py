@@ -1,36 +1,27 @@
 import traceback
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from server.scanner import scanner, TableInfo
 from server.comparator import compare_tables, fetch_sample_data
-from server.config import CATALOG_NAME
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
 
 
-def _resolve_catalog(catalog: str | None) -> str:
-    return catalog or scanner.current_catalog or CATALOG_NAME
+def _get_table_info(catalog: str, schema: str, table: str) -> TableInfo:
+    t = scanner.get_table_raw(catalog, schema, table)
+    if t is None:
+        raise HTTPException(status_code=404, detail=f"Table {catalog}.{schema}.{table} not found")
+    return t
 
 
-def _get_table_info(schema: str, table: str) -> TableInfo:
-    for t in scanner.get_all_tables_raw():
-        if t.schema == schema and t.name == table:
-            return t
-    raise HTTPException(status_code=404, detail=f"Table {schema}.{table} not found")
-
-
-@router.get("/{schema1}/{table1}/{schema2}/{table2}")
-def compare(
-    schema1: str, table1: str, schema2: str, table2: str,
-    catalog: str | None = Query(None),
-):
+@router.get("/{cat1}/{schema1}/{table1}/{cat2}/{schema2}/{table2}")
+def compare(cat1: str, schema1: str, table1: str, cat2: str, schema2: str, table2: str):
     try:
-        cat = _resolve_catalog(catalog)
-        if scanner.needs_scan(cat):
-            scanner.scan(cat)
-        ta = _get_table_info(schema1, table1)
-        tb = _get_table_info(schema2, table2)
+        if not scanner.is_scanned:
+            scanner.scan_all()
+        ta = _get_table_info(cat1, schema1, table1)
+        tb = _get_table_info(cat2, schema2, table2)
         return compare_tables(ta, tb)
     except HTTPException:
         raise
@@ -41,13 +32,12 @@ def compare(
         )
 
 
-@router.get("/sample/{schema}/{table}")
-def sample(schema: str, table: str, catalog: str | None = Query(None)):
+@router.get("/sample/{catalog}/{schema}/{table}")
+def sample(catalog: str, schema: str, table: str):
     try:
-        cat = _resolve_catalog(catalog)
-        if scanner.needs_scan(cat):
-            scanner.scan(cat)
-        t = _get_table_info(schema, table)
+        if not scanner.is_scanned:
+            scanner.scan_all()
+        t = _get_table_info(catalog, schema, table)
         result = fetch_sample_data(t.full_name)
         if result is None:
             raise HTTPException(status_code=500, detail="Could not fetch sample data")
