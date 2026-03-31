@@ -2,8 +2,6 @@ bundle:
   name: uc-data-duplicates
 
 variables:
-  catalog_name:
-    description: Unity Catalog catalog to scan for data quality analysis
   warehouse_id:
     description: SQL warehouse ID used for row-count and sample-data queries
 
@@ -12,8 +10,8 @@ resources:
     uc_data_duplicates:
       name: uc-data-duplicates
       description: >
-        Unity Catalog Data Quality Explorer — scans metadata, detects duplicate
-        datasets across schemas, recommends gold-standard tables, and surfaces
+        Unity Catalog Data Quality Explorer — scans metadata across any catalog,
+        detects duplicate datasets, recommends gold-standard tables, and surfaces
         group-level permissions.
       source_code_path: .
 
@@ -21,7 +19,6 @@ targets:
   dev:
     default: true
     workspace:
-      host: https://<YOUR_WORKSPACE>.cloud.databricks.com
+      host: https://fevm-classic-stable-j3egkl.cloud.databricks.com
     variables:
-      catalog_name: <YOUR_CATALOG>
-      warehouse_id: <YOUR_WAREHOUSE_ID>
+      warehouse_id: ba6bf944ec7bf0ff

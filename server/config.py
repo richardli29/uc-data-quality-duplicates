@@ -3,7 +3,7 @@ from databricks.sdk import WorkspaceClient
 
 IS_DATABRICKS_APP = bool(os.environ.get("DATABRICKS_APP_NAME"))
 
-CATALOG_NAME = os.environ.get("CATALOG_NAME", "main")
+CATALOG_NAME = os.environ.get("CATALOG_NAME", "")
 WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
 
 

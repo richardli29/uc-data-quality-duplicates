@@ -9,7 +9,5 @@ command:
   - "8000"
 
 env:
-  - name: CATALOG_NAME
-    value: "<YOUR_CATALOG>"
   - name: WAREHOUSE_ID
-    value: "<YOUR_WAREHOUSE_ID>"
+    value: "ba6bf944ec7bf0ff"

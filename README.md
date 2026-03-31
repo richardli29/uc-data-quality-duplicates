@@ -1,13 +1,13 @@
 # UC Data Duplicates
 
-A Databricks App that scans Unity Catalog metadata to find duplicate datasets across schemas, recommends gold-standard tables, and surfaces group-level access permissions — helping data architects and engineers clean up data sprawl before it reaches analysts.
+A Databricks App that scans Unity Catalog metadata across any accessible catalog to find duplicate datasets, recommends gold-standard tables, and surfaces group-level access permissions — helping data architects and engineers clean up data sprawl before it reaches analysts.
 
 ## Features
 
 | Feature | Description |
 |---|---|
-| **Catalog Scanner** | Reads every schema and table in a catalog — columns, types, row counts, comments, timestamps. |
-| **Permissions Viewer** | Shows which groups and users have READ / WRITE access to each table (via UC Permissions API). |
+| **Multi-Catalog Scanner** | Lists all accessible catalogs and scans any one — schemas, tables, columns, types, row counts, comments, timestamps. |
+| **Permissions Viewer** | Shows which groups and users have READ / WRITE access to each table via `system.information_schema` — no `MANAGE` privilege needed. |
 | **Duplicate Detection** | Clusters tables that represent the same entity using column-name Jaccard similarity, type compatibility, and fuzzy table-name matching. |
 | **Gold Standard Scoring** | Ranks each duplicate on completeness, documentation, naming convention, schema tier, freshness, and row count to recommend the canonical dataset. |
 | **Table Comparison** | Side-by-side column diff, permissions diff, and sample data for any two tables. |
@@ -15,29 +15,31 @@ A Databricks App that scans Unity Catalog metadata to find duplicate datasets ac
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Databricks App                      │
-│                                                      │
-│  ┌──────────────┐       ┌──────────────────────────┐ │
-│  │   Frontend    │       │     FastAPI Backend       │ │
-│  │  (Vanilla JS) │◄────►│                          │ │
-│  │              │       │  /api/catalog/*           │ │
-│  │  Dashboard   │       │  /api/duplicates/*        │ │
-│  │  Catalog     │       │  /api/compare/*           │ │
-│  │  Duplicates  │       │                          │ │
-│  │  Compare     │       │  scanner.py  (UC SDK)    │ │
-│  └──────────────┘       │  duplicates.py           │ │
-│                         │  comparator.py           │ │
-│                         └────────┬─────────────────┘ │
-└──────────────────────────────────┼───────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                    Databricks App                        │
+│                                                          │
+│  ┌──────────────┐       ┌──────────────────────────────┐ │
+│  │   Frontend    │       │     FastAPI Backend           │ │
+│  │  (Vanilla JS) │◄────►│                              │ │
+│  │              │       │  /api/catalog/list            │ │
+│  │  Dashboard   │       │  /api/catalog/scan?catalog=X  │ │
+│  │  Catalog     │       │  /api/duplicates/*            │ │
+│  │  Duplicates  │       │  /api/compare/*               │ │
+│  │  Compare     │       │                              │ │
+│  └──────────────┘       │  scanner.py  (UC SDK + SQL)  │ │
+│                         │  duplicates.py               │ │
+│                         │  comparator.py               │ │
+│                         └────────┬─────────────────────┘ │
+└──────────────────────────────────┼───────────────────────┘
                                    │
-                    ┌──────────────▼──────────────┐
-                    │      Databricks APIs         │
-                    │                              │
-                    │  Unity Catalog  (metadata)   │
-                    │  SQL Statement  (queries)    │
-                    │  UC Permissions (grants)     │
-                    └──────────────────────────────┘
+                    ┌──────────────▼──────────────────┐
+                    │        Databricks APIs           │
+                    │                                  │
+                    │  Unity Catalog SDK  (metadata)   │
+                    │  SQL Statement API  (queries)    │
+                    │  system.information_schema       │
+                    │    (permissions — no MANAGE)     │
+                    └──────────────────────────────────┘
 ```
 
 ## Project structure
@@ -50,18 +52,20 @@ uc-data-duplicates/
 ├── requirements.txt        # Python dependencies
 ├── server/
 │   ├── config.py           # Dual-mode auth (local CLI / deployed App)
-│   ├── scanner.py          # UC metadata scanner + permissions fetcher
+│   ├── scanner.py          # UC metadata scanner + permissions (via SQL)
 │   ├── duplicates.py       # Duplicate detection + gold standard scoring
 │   ├── comparator.py       # Table comparison + sample data
 │   └── routes/
-│       ├── catalog.py      # /api/catalog/*
+│       ├── catalog.py      # /api/catalog/*  (list, scan, schemas, tables)
 │       ├── duplicates.py   # /api/duplicates/*
 │       └── compare.py      # /api/compare/*
 ├── frontend/
 │   └── dist/               # Static SPA (HTML/CSS/JS, no build step)
 └── scripts/
-    ├── deploy.sh           # One-command deploy (bundle + app source)
-    └── generate_data.py    # Optional test data generator
+    ├── deploy.sh                  # One-command deploy (bundle + app source)
+    ├── create_governance_views.sql # MVs for permissions (run once per catalog)
+    ├── generate_data.py           # Test data generator (Python + CLI)
+    └── generate_data.sql          # Test data generator (pure SQL)
 ```
 
 ## Prerequisites
@@ -71,7 +75,61 @@ uc-data-duplicates/
 - A Databricks workspace with:
   - Unity Catalog enabled
   - A SQL warehouse (Serverless or Pro)
+  - System tables enabled (for permissions via `system.information_schema`)
   - Permission to create Apps
+
+## Permissions
+
+The app's service principal needs **no `MANAGE` privilege**. Permissions are read via `system.information_schema` SQL views instead of the UC Permissions REST API.
+
+### Required grants for the service principal
+
+| Privilege | Scope | Purpose |
+|---|---|---|
+| `USE CATALOG` | Each catalog to scan | List schemas and tables |
+| `USE SCHEMA` | Each schema to scan | List tables within schemas |
+| `SELECT` | Each schema to scan | Row counts and sample data queries |
+| `USE SCHEMA` | `<catalog>.governance` | Access governance materialized views |
+| `SELECT` | `<catalog>.governance` | Read permissions (catalog/schema/table grants) |
+| `CAN_USE` | SQL warehouse | Execute SQL queries |
+
+### Quick setup
+
+**Step 1 — Create governance materialized views** (run once per catalog):
+
+Open `scripts/create_governance_views.sql` in a Databricks SQL editor, set the widget to your catalog name, and run all statements. This creates MVs in `<catalog>.governance` that mirror `system.information_schema` privilege tables using **definer rights** — so the SP can read permissions without needing access to the `system` catalog.
+
+> Any user with `SELECT` on `system.information_schema` can create these MVs (typically all workspace users).
+
+**Step 2 — Grant the SP access** (per catalog):
+
+```sql
+-- Catalog + schema access
+GRANT USE CATALOG ON CATALOG <CATALOG> TO `<SP_ID>`;
+GRANT USE SCHEMA ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;  -- repeat per schema
+GRANT SELECT ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;      -- repeat per schema
+
+-- Governance MVs (permissions viewer)
+GRANT USE SCHEMA ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
+```
+
+### How permissions reading works
+
+The app tries three sources in order:
+1. `<catalog>.governance.*_privileges` — materialized views (recommended, no MANAGE needed)
+2. `system.information_schema.*_privileges` — direct system tables (requires metastore admin to grant)
+3. Degrades gracefully — shows "No grants found" if neither source is accessible
+
+### Alternative: BROWSE privilege
+
+For read-only metadata access across all current and future catalogs:
+
+```sql
+GRANT BROWSE ON METASTORE TO `<SP_ID>`;
+```
+
+`BROWSE` covers metadata listing. You still need per-catalog `SELECT` for row counts and sample data.
 
 ## Getting started
 
@@ -97,17 +155,15 @@ for w in json.load(sys.stdin):
 
 Edit **two files** with your workspace details:
 
-**`app.yaml`** — the app reads these at runtime:
+**`app.yaml`** — set the SQL warehouse for runtime queries:
 
 ```yaml
 env:
-  - name: CATALOG_NAME
-    value: "my_catalog"
   - name: WAREHOUSE_ID
     value: "abc123def456"
 ```
 
-**`databricks.yml`** — the bundle uses these for deployment:
+**`databricks.yml`** — set the workspace and warehouse for deployment:
 
 ```yaml
 targets:
@@ -115,13 +171,22 @@ targets:
     workspace:
       host: https://<WORKSPACE>.cloud.databricks.com
     variables:
-      catalog_name: my_catalog
       warehouse_id: abc123def456
 ```
 
+> **Note:** `CATALOG_NAME` is no longer required. The app discovers all accessible catalogs automatically and lets users pick from a dropdown.
+
 ### 4. (Optional) Generate test data
 
-Creates 20 education-themed tables across 5 schemas (bronze, silver, gold, team_analytics, team_reporting) with deliberate duplicates:
+Creates 20 education-themed tables across 5 schemas with deliberate duplicates.
+
+**Option A — SQL notebook** (paste into a Databricks SQL editor):
+
+```bash
+# Open scripts/generate_data.sql and set the widget to your catalog name
+```
+
+**Option B — Python CLI**:
 
 ```bash
 python3 scripts/generate_data.py \
@@ -155,7 +220,7 @@ databricks apps deploy uc-data-duplicates \
 
 ### 6. Grant permissions to the app service principal
 
-The deployment creates a service principal. Find its ID:
+Find the SP ID:
 
 ```bash
 databricks apps get uc-data-duplicates --output json | python3 -c "
@@ -165,16 +230,20 @@ print(d['service_principal_client_id'])
 "
 ```
 
-Then grant it access (replace `<SP_ID>` and `<CATALOG>`):
+Then grant access (replace `<SP_ID>` and `<CATALOG>`):
 
 ```sql
+-- Access to catalogs you want to scan (repeat per schema)
 GRANT USE CATALOG ON CATALOG <CATALOG> TO `<SP_ID>`;
-GRANT USE SCHEMA ON SCHEMA <CATALOG>.* TO `<SP_ID>`;
-GRANT SELECT ON SCHEMA <CATALOG>.* TO `<SP_ID>`;
-GRANT MANAGE ON CATALOG <CATALOG> TO `<SP_ID>`;
+GRANT USE SCHEMA ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;
+
+-- Access to governance MVs for permissions (no MANAGE needed)
+GRANT USE SCHEMA ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
 ```
 
-And grant `CAN_USE` on the SQL warehouse via the UI or:
+And grant `CAN_USE` on the SQL warehouse:
 
 ```bash
 databricks api patch /api/2.0/permissions/sql/warehouses/<WAREHOUSE_ID> \
@@ -191,23 +260,26 @@ Open the `url` from the output in your browser. You must be logged into the work
 
 ## Using the app
 
-1. **Dashboard** — click **Scan Catalog** to fetch all metadata. Stat cards show schema, table, and column counts plus detected duplicate groups.
+1. **Dashboard** — select a catalog from the dropdown, then click **Scan Catalog** to fetch all metadata. Stat cards show schema, table, and column counts plus detected duplicate groups.
 2. **Catalog Explorer** — browse the schema tree, click a table to see columns, row count, owner, comments, and group permissions.
 3. **Duplicates** — view duplicate clusters with similarity scores and gold-standard badges. Adjust the threshold slider and re-detect.
 4. **Compare** — pick any two tables for a side-by-side column diff, permissions comparison, and sample data preview.
 
 ## API reference
 
+All endpoints accept an optional `?catalog=<name>` query parameter. If omitted, the last-scanned catalog is used.
+
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/catalog/scan` | Full catalog scan (metadata + permissions + row counts) |
-| `GET` | `/api/catalog/schemas` | List scanned schemas |
-| `GET` | `/api/catalog/tables?schema=gold` | List tables, optionally filtered by schema |
-| `GET` | `/api/catalog/table/{schema}/{table}` | Full metadata for one table |
-| `GET` | `/api/duplicates/detect?threshold=0.5` | Detect duplicate groups above the similarity threshold |
+| `GET` | `/api/catalog/list` | List all accessible catalogs |
+| `GET` | `/api/catalog/scan?catalog=X` | Full catalog scan (metadata + permissions + row counts) |
+| `GET` | `/api/catalog/schemas?catalog=X` | List scanned schemas |
+| `GET` | `/api/catalog/tables?schema=gold&catalog=X` | List tables, optionally filtered by schema |
+| `GET` | `/api/catalog/table/{schema}/{table}?catalog=X` | Full metadata for one table |
+| `GET` | `/api/duplicates/detect?threshold=0.5&catalog=X` | Detect duplicate groups above the similarity threshold |
 | `GET` | `/api/duplicates/groups` | Return cached duplicate groups |
-| `GET` | `/api/compare/{s1}/{t1}/{s2}/{t2}` | Column + permissions diff between two tables |
-| `GET` | `/api/compare/sample/{schema}/{table}` | Fetch 10 sample rows from a table |
+| `GET` | `/api/compare/{s1}/{t1}/{s2}/{t2}?catalog=X` | Column + permissions diff between two tables |
+| `GET` | `/api/compare/sample/{schema}/{table}?catalog=X` | Fetch 10 sample rows from a table |
 
 ## Customisation
 

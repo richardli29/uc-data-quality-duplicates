@@ -3,6 +3,9 @@
    ============================================================ */
 
 let state = {
+  catalogs: [],
+  selectedCatalog: null,
+  catalogsLoading: false,
   scanned: false,
   scanning: false,
   stats: null,
@@ -32,7 +35,36 @@ function navigate() {
 }
 
 window.addEventListener('hashchange', navigate);
-window.addEventListener('load', navigate);
+window.addEventListener('load', async () => {
+  await loadCatalogs();
+  navigate();
+});
+
+async function loadCatalogs() {
+  state.catalogsLoading = true;
+  try {
+    state.catalogs = await API.listCatalogs();
+    if (state.catalogs.length && !state.selectedCatalog) {
+      state.selectedCatalog = state.catalogs[0].name;
+    }
+  } catch (e) {
+    console.warn('Failed to load catalogs:', e.message);
+  }
+  state.catalogsLoading = false;
+}
+
+function onCatalogChange(name) {
+  if (name === state.selectedCatalog) return;
+  state.selectedCatalog = name;
+  state.scanned = false;
+  state.stats = null;
+  state.schemas = [];
+  state.tables = [];
+  state.groups = [];
+  state.selectedTable = null;
+  state.compareResult = null;
+  navigate();
+}
 
 // ===== Render =====
 const $ = id => document.getElementById(id);
@@ -47,6 +79,32 @@ function render(page) {
   }
 }
 
+// ===== Catalog Selector =====
+function catalogSelector() {
+  if (state.catalogsLoading) {
+    return '<div style="margin-bottom:20px"><span style="color:var(--text-muted);font-size:13px">Loading catalogs...</span></div>';
+  }
+  if (!state.catalogs.length) {
+    return '<div style="margin-bottom:20px"><span style="color:var(--yellow);font-size:13px">No catalogs found. Check service principal permissions.</span></div>';
+  }
+  return `
+    <div class="catalog-selector" style="margin-bottom:20px;display:flex;align-items:center;gap:12px">
+      <label style="font-size:13px;font-weight:600;color:var(--text-muted)">Catalog</label>
+      <select id="catalog-select" style="min-width:220px">
+        ${state.catalogs.map(c =>
+          `<option value="${c.name}" ${c.name === state.selectedCatalog ? 'selected' : ''}>${c.name}</option>`
+        ).join('')}
+      </select>
+      <span style="font-size:12px;color:var(--text-dim)">${state.catalogs.length} catalog${state.catalogs.length !== 1 ? 's' : ''} available</span>
+    </div>
+  `;
+}
+
+function bindCatalogSelector() {
+  const sel = $('catalog-select');
+  if (sel) sel.onchange = (e) => onCatalogChange(e.target.value);
+}
+
 // ===== Utilities =====
 function html(strings, ...vals) {
   return strings.reduce((out, str, i) => out + str + (vals[i] ?? ''), '');
@@ -59,12 +117,12 @@ function similarityColor(score) {
 }
 
 function formatNumber(n) {
-  if (n == null) return '—';
+  if (n == null) return '\u2014';
   return n.toLocaleString();
 }
 
 function timeAgo(ts) {
-  if (!ts) return '—';
+  if (!ts) return '\u2014';
   const d = new Date(ts);
   const now = Date.now();
   const diff = now - d.getTime();
@@ -78,7 +136,7 @@ function loading(msg = 'Loading...') {
 }
 
 function permBadges(permissions) {
-  if (!permissions || !permissions.length) return '<span class="tag tag-yellow">No grants</span>';
+  if (!permissions || !permissions.length) return '<span class="tag tag-yellow">No grants found</span>';
   return permissions.map(p => {
     const isWrite = p.privileges.some(pr =>
       pr === 'ALL_PRIVILEGES' || pr === 'MODIFY' || pr === 'CREATE'
@@ -97,26 +155,30 @@ function permBadges(permissions) {
 
 // ===== Dashboard =====
 async function renderDashboard() {
+  const cat = state.selectedCatalog;
   main().innerHTML = `
     <h2 class="page-title">Dashboard</h2>
     <p class="page-desc">Scan Unity Catalog metadata, detect duplicate datasets, and identify gold-standard tables.</p>
+    ${catalogSelector()}
     <div style="margin-bottom:20px">
-      <button class="btn btn-primary" id="scan-btn" ${state.scanning ? 'disabled' : ''}>
+      <button class="btn btn-primary" id="scan-btn" ${state.scanning || !cat ? 'disabled' : ''}>
         ${state.scanning ? '<div class="spinner" style="width:14px;height:14px;margin-right:6px"></div> Scanning...' : 'Scan Catalog'}
       </button>
     </div>
     <div class="stats-grid" id="stats-grid">
-      ${state.stats ? renderStats(state.stats) : '<div class="stat-card"><div class="stat-label">Status</div><div class="stat-value" style="font-size:16px;color:var(--text-muted)">Click "Scan Catalog" to begin</div></div>'}
+      ${state.stats ? renderStats(state.stats) : '<div class="stat-card"><div class="stat-label">Status</div><div class="stat-value" style="font-size:16px;color:var(--text-muted)">Select a catalog and click "Scan Catalog" to begin</div></div>'}
     </div>
     <div id="top-duplicates"></div>
   `;
 
+  bindCatalogSelector();
   $('scan-btn').onclick = doScan;
   if (state.groups.length) renderTopDuplicates();
 }
 
 function renderStats(s) {
   return `
+    <div class="stat-card"><div class="stat-label">Catalog</div><div class="stat-value" style="font-size:16px">${s.catalog || state.selectedCatalog}</div></div>
     <div class="stat-card"><div class="stat-label">Schemas</div><div class="stat-value">${s.schema_count}</div></div>
     <div class="stat-card"><div class="stat-label">Tables</div><div class="stat-value">${s.table_count}</div></div>
     <div class="stat-card"><div class="stat-label">Columns</div><div class="stat-value">${s.column_count}</div></div>
@@ -125,13 +187,15 @@ function renderStats(s) {
 }
 
 async function doScan() {
+  const cat = state.selectedCatalog;
+  if (!cat) { alert('Select a catalog first'); return; }
   state.scanning = true;
   renderDashboard();
   try {
-    state.stats = await API.scanCatalog();
-    state.schemas = await API.getSchemas();
-    state.tables = await API.getTables();
-    state.groups = await API.detectDuplicates(state.threshold);
+    state.stats = await API.scanCatalog(cat);
+    state.schemas = await API.getSchemas(cat);
+    state.tables = await API.getTables(null, cat);
+    state.groups = await API.detectDuplicates(state.threshold, cat);
     state.scanned = true;
   } catch (e) {
     alert('Scan failed: ' + e.message);
@@ -166,7 +230,7 @@ async function renderCatalog() {
 
   main().innerHTML = `
     <h2 class="page-title">Catalog Explorer</h2>
-    <p class="page-desc">Browse schemas and tables. Click a table to see its metadata and permissions.</p>
+    <p class="page-desc">Browsing <strong>${state.selectedCatalog}</strong>. Click a table to see its metadata and permissions.</p>
     <div class="tree-container">
       <div class="tree-panel" id="tree-panel">${renderTree()}</div>
       <div class="detail-panel" id="detail-panel">
@@ -183,7 +247,7 @@ async function renderCatalog() {
       tableEl.classList.add('active');
       $('detail-panel').innerHTML = loading('Loading table details...');
       try {
-        const info = await API.getTable(schema, table);
+        const info = await API.getTable(schema, table, state.selectedCatalog);
         state.selectedTable = info;
         renderTableDetail(info);
       } catch (e) {
@@ -227,7 +291,7 @@ function renderTableDetail(info) {
     <div class="stats-grid" style="grid-template-columns:repeat(3,1fr);margin-bottom:20px">
       <div class="stat-card"><div class="stat-label">Rows</div><div class="stat-value" style="font-size:20px">${formatNumber(info.row_count)}</div></div>
       <div class="stat-card"><div class="stat-label">Columns</div><div class="stat-value" style="font-size:20px">${info.columns.length}</div></div>
-      <div class="stat-card"><div class="stat-label">Owner</div><div class="stat-value" style="font-size:14px">${info.owner || '—'}</div></div>
+      <div class="stat-card"><div class="stat-label">Owner</div><div class="stat-value" style="font-size:14px">${info.owner || '\u2014'}</div></div>
     </div>
 
     <div class="section">
@@ -245,7 +309,7 @@ function renderTableDetail(info) {
               <td style="color:var(--text-dim)">${i + 1}</td>
               <td style="font-weight:600">${c.name}</td>
               <td><span class="tag tag-accent">${c.type_name}</span></td>
-              <td>${c.nullable ? '✓' : '✗'}</td>
+              <td>${c.nullable ? '\u2713' : '\u2717'}</td>
             </tr>
           `).join('')}
         </tbody>
@@ -267,7 +331,7 @@ async function renderDuplicates() {
 
   main().innerHTML = `
     <h2 class="page-title">Duplicate Detection</h2>
-    <p class="page-desc">Tables grouped by similarity. The gold badge marks the recommended standard dataset.</p>
+    <p class="page-desc">Tables in <strong>${state.selectedCatalog}</strong> grouped by similarity. The gold badge marks the recommended standard dataset.</p>
     <div class="threshold-control">
       <label>Similarity Threshold</label>
       <input type="range" id="threshold-slider" min="0.1" max="1.0" step="0.05" value="${state.threshold}" />
@@ -284,7 +348,7 @@ async function renderDuplicates() {
 
   $('redetect-btn').onclick = async () => {
     $('dup-groups').innerHTML = loading('Detecting duplicates...');
-    state.groups = await API.detectDuplicates(state.threshold);
+    state.groups = await API.detectDuplicates(state.threshold, state.selectedCatalog);
     $('dup-groups').innerHTML = state.groups.length
       ? state.groups.map(g => renderDupGroupCard(g)).join('')
       : '<div class="empty-state"><h3>No duplicates found</h3><p>Try lowering the threshold.</p></div>';
@@ -296,7 +360,7 @@ function renderDupGroupCard(g) {
   return `
     <div class="dup-group">
       <div class="dup-group-header">
-        <span class="dup-group-title">Group ${g.group_id} — ${g.tables.length} tables</span>
+        <span class="dup-group-title">Group ${g.group_id} \u2014 ${g.tables.length} tables</span>
         <span class="similarity-score" style="color:${similarityColor(maxScore)}">${(maxScore * 100).toFixed(0)}% max similarity</span>
       </div>
       <div class="similarity-bar"><div class="similarity-bar-fill" style="width:${maxScore * 100}%;background:${similarityColor(maxScore)}"></div></div>
@@ -305,10 +369,10 @@ function renderDupGroupCard(g) {
           const isGold = t === g.gold_standard;
           const parts = t.split('.');
           const score = g.gold_scores[t];
-          return `<span class="dup-table-tag ${isGold ? 'gold' : ''}" title="Gold score: ${score ?? '—'}">${isGold ? '★ ' : ''}${parts[1]}.${parts[2]}</span>`;
+          return `<span class="dup-table-tag ${isGold ? 'gold' : ''}" title="Gold score: ${score ?? '\u2014'}">${isGold ? '\u2605 ' : ''}${parts[1]}.${parts[2]}</span>`;
         }).join('')}
       </div>
-      ${g.gold_standard ? `<div style="margin-top:8px"><span class="gold-badge">★ Gold Standard: ${g.gold_standard.split('.').slice(1).join('.')}</span></div>` : ''}
+      ${g.gold_standard ? `<div style="margin-top:8px"><span class="gold-badge">\u2605 Gold Standard: ${g.gold_standard.split('.').slice(1).join('.')}</span></div>` : ''}
       <div style="margin-top:12px">
         <table class="data-table">
           <thead><tr><th>Table A</th><th>Table B</th><th>Columns</th><th>Types</th><th>Name</th><th>Score</th><th></th></tr></thead>
@@ -359,7 +423,7 @@ async function renderCompare() {
 
   main().innerHTML = `
     <h2 class="page-title">Compare Tables</h2>
-    <p class="page-desc">Side-by-side schema diff, permissions, and sample data comparison.</p>
+    <p class="page-desc">Side-by-side schema diff, permissions, and sample data comparison in <strong>${state.selectedCatalog}</strong>.</p>
     <div class="compare-selector" id="compare-form">
       <div class="field-group">
         <span class="field-label">Table A</span>
@@ -393,15 +457,16 @@ async function doCompare() {
   if (a.length < 2 || b.length < 2) { alert('Select two tables'); return; }
   const [s1, t1] = a;
   const [s2, t2] = b;
+  const cat = state.selectedCatalog;
 
   const el = $('compare-result');
   el.innerHTML = loading('Comparing tables...');
 
   try {
     const [result, sampleA, sampleB] = await Promise.all([
-      API.compareTables(s1, t1, s2, t2),
-      API.getSample(s1, t1).catch(() => null),
-      API.getSample(s2, t2).catch(() => null),
+      API.compareTables(s1, t1, s2, t2, cat),
+      API.getSample(s1, t1, cat).catch(() => null),
+      API.getSample(s2, t2, cat).catch(() => null),
     ]);
     state.compareResult = result;
     renderCompareResult(result, sampleA, sampleB);
@@ -419,7 +484,7 @@ function renderCompareResult(r, sampleA, sampleB) {
         <div style="font-size:13px;color:var(--text-muted)">
           <div>Rows: <strong>${formatNumber(r.table_a.row_count)}</strong></div>
           <div>Columns: <strong>${r.table_a.column_count}</strong></div>
-          <div>Owner: ${r.table_a.owner || '—'}</div>
+          <div>Owner: ${r.table_a.owner || '\u2014'}</div>
           ${r.table_a.comment ? `<div style="margin-top:6px;font-style:italic">${r.table_a.comment}</div>` : ''}
         </div>
       </div>
@@ -428,7 +493,7 @@ function renderCompareResult(r, sampleA, sampleB) {
         <div style="font-size:13px;color:var(--text-muted)">
           <div>Rows: <strong>${formatNumber(r.table_b.row_count)}</strong></div>
           <div>Columns: <strong>${r.table_b.column_count}</strong></div>
-          <div>Owner: ${r.table_b.owner || '—'}</div>
+          <div>Owner: ${r.table_b.owner || '\u2014'}</div>
           ${r.table_b.comment ? `<div style="margin-top:6px;font-style:italic">${r.table_b.comment}</div>` : ''}
         </div>
       </div>
@@ -449,8 +514,8 @@ function renderCompareResult(r, sampleA, sampleB) {
           ${r.permissions_diff.map(p => `
             <tr>
               <td style="font-weight:600">${p.principal}</td>
-              <td>${(p.privileges_a || []).map(pr => `<span class="tag ${pr === 'SELECT' ? 'tag-green' : 'tag-blue'}">${pr}</span> `).join('') || '—'}</td>
-              <td>${(p.privileges_b || []).map(pr => `<span class="tag ${pr === 'SELECT' ? 'tag-green' : 'tag-blue'}">${pr}</span> `).join('') || '—'}</td>
+              <td>${(p.privileges_a || []).map(pr => `<span class="tag ${pr === 'SELECT' ? 'tag-green' : 'tag-blue'}">${pr}</span> `).join('') || '\u2014'}</td>
+              <td>${(p.privileges_b || []).map(pr => `<span class="tag ${pr === 'SELECT' ? 'tag-green' : 'tag-blue'}">${pr}</span> `).join('') || '\u2014'}</td>
               <td>${p.match ? '<span class="tag tag-green">Match</span>' : '<span class="tag tag-yellow">Differs</span>'}</td>
             </tr>
           `).join('')}
@@ -472,8 +537,8 @@ function renderCompareResult(r, sampleA, sampleB) {
                 ${c.status === 'only_a' ? `<span class="tag tag-red">Only in A</span>` : ''}
                 ${c.status === 'only_b' ? `<span class="tag tag-blue">Only in B</span>` : ''}
               </td>
-              <td>${c.type_a || '—'}</td>
-              <td>${c.type_b || '—'}</td>
+              <td>${c.type_a || '\u2014'}</td>
+              <td>${c.type_b || '\u2014'}</td>
             </tr>
           `).join('')}
         </tbody>

@@ -1,5 +1,5 @@
 import traceback
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from server.scanner import scanner, TableInfo
@@ -7,6 +7,10 @@ from server.comparator import compare_tables, fetch_sample_data
 from server.config import CATALOG_NAME
 
 router = APIRouter(prefix="/api/compare", tags=["compare"])
+
+
+def _resolve_catalog(catalog: str | None) -> str:
+    return catalog or scanner.current_catalog or CATALOG_NAME
 
 
 def _get_table_info(schema: str, table: str) -> TableInfo:
@@ -17,10 +21,14 @@ def _get_table_info(schema: str, table: str) -> TableInfo:
 
 
 @router.get("/{schema1}/{table1}/{schema2}/{table2}")
-def compare(schema1: str, table1: str, schema2: str, table2: str):
+def compare(
+    schema1: str, table1: str, schema2: str, table2: str,
+    catalog: str | None = Query(None),
+):
     try:
-        if not scanner.is_scanned:
-            scanner.scan(CATALOG_NAME)
+        cat = _resolve_catalog(catalog)
+        if scanner.needs_scan(cat):
+            scanner.scan(cat)
         ta = _get_table_info(schema1, table1)
         tb = _get_table_info(schema2, table2)
         return compare_tables(ta, tb)
@@ -34,10 +42,11 @@ def compare(schema1: str, table1: str, schema2: str, table2: str):
 
 
 @router.get("/sample/{schema}/{table}")
-def sample(schema: str, table: str):
+def sample(schema: str, table: str, catalog: str | None = Query(None)):
     try:
-        if not scanner.is_scanned:
-            scanner.scan(CATALOG_NAME)
+        cat = _resolve_catalog(catalog)
+        if scanner.needs_scan(cat):
+            scanner.scan(cat)
         t = _get_table_info(schema, table)
         result = fetch_sample_data(t.full_name)
         if result is None:

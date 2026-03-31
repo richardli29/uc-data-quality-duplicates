@@ -1,8 +1,16 @@
-"""Unity Catalog metadata scanner. Collects table/column info and effective permissions."""
+"""Unity Catalog metadata scanner. Collects table/column info and permissions.
+
+Permissions are read from materialized views in a ``governance`` schema within the
+scanned catalog (mirrors of system.information_schema).  This avoids needing
+MANAGE or metastore-admin — only SELECT on the governance schema is required.
+
+Falls back to system.information_schema if governance MVs don't exist, and
+degrades gracefully if neither source is accessible."""
 
 from __future__ import annotations
 import json
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -62,6 +70,7 @@ class CatalogScanner:
         self._tables: list[TableInfo] = []
         self._schemas: list[SchemaInfo] = []
         self._scanned = False
+        self._current_catalog: str | None = None
 
     @property
     def client(self):
@@ -75,6 +84,56 @@ class CatalogScanner:
     @property
     def is_scanned(self):
         return self._scanned
+
+    @property
+    def current_catalog(self) -> str | None:
+        return self._current_catalog
+
+    def needs_scan(self, catalog: str | None = None) -> bool:
+        if not self._scanned:
+            return True
+        if catalog and catalog != self._current_catalog:
+            return True
+        return False
+
+    def list_catalogs(self) -> list[dict]:
+        """Return all accessible catalogs, filtering out system/sharing catalogs."""
+        skip_names = {"system", "samples", "__databricks_internal"}
+        skip_types = {"SYSTEM_CATALOG", "DELTASHARING_CATALOG"}
+        result = []
+        for c in self.client.catalogs.list():
+            if c.name in skip_names:
+                continue
+            ctype = getattr(c, "catalog_type", None)
+            if ctype and str(ctype) in skip_types:
+                continue
+            if hasattr(ctype, "value") and ctype.value in skip_types:
+                continue
+            result.append({
+                "name": c.name,
+                "owner": c.owner,
+                "comment": c.comment,
+            })
+        return result
+
+    def _run_sql(self, sql: str) -> list[list] | None:
+        """Execute a SQL statement via the SQL Statement API and return rows."""
+        try:
+            raw = self.client.api_client.do(
+                "POST",
+                "/api/2.0/sql/statements/",
+                body={
+                    "statement": sql,
+                    "warehouse_id": WAREHOUSE_ID,
+                    "wait_timeout": "30s",
+                },
+            )
+            data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+            if data.get("status", {}).get("state") == "SUCCEEDED":
+                return data.get("result", {}).get("data_array", [])
+        except Exception as e:
+            logger.debug(f"SQL query failed: {e}")
+        return None
 
     def scan(self, catalog: str = CATALOG_NAME) -> dict:
         logger.info(f"Scanning catalog: {catalog}")
@@ -142,6 +201,7 @@ class CatalogScanner:
         self._fetch_permissions(catalog)
         self._fetch_row_counts(catalog)
         self._scanned = True
+        self._current_catalog = catalog
 
         return {
             "catalog": catalog,
@@ -150,109 +210,131 @@ class CatalogScanner:
             "column_count": sum(len(t.columns) for t in self._tables),
         }
 
-    def _fetch_permissions(self, catalog: str) -> list[str]:
-        """Fetch permissions for schemas (inherited to all tables) and merge."""
-        errors = []
-        schema_perms: dict[str, list[PermissionGrant]] = {}
+    def _fetch_permissions(self, catalog: str):
+        """Fetch permissions from governance MVs, falling back to system.information_schema.
 
-        def _fetch_grants(url: str) -> tuple[dict, str | None]:
-            """Fetch grants from a UC permissions URL, handling various SDK return types."""
-            try:
-                raw = self.client.api_client.do("GET", url)
-                # Handle different return types from SDK versions
-                if isinstance(raw, dict):
-                    return raw, None
-                if isinstance(raw, (str, bytes)):
-                    text = raw if isinstance(raw, str) else raw.decode()
-                    return json.loads(text), None
-                # Might be a response object
-                if hasattr(raw, 'json'):
-                    return raw.json(), None
-                if hasattr(raw, 'text'):
-                    return json.loads(raw.text), None
-                if hasattr(raw, 'read'):
-                    return json.loads(raw.read()), None
-                return {}, f"unknown type: {type(raw).__name__}: {str(raw)[:80]}"
-            except Exception as e:
-                return {}, str(e)[:120]
+        Tries ``<catalog>.governance.catalog_privileges`` etc. first (materialized
+        views that mirror system.information_schema — only needs SELECT on the
+        governance schema).  Falls back to ``system.information_schema`` if the
+        governance schema doesn't exist, and silently skips if neither is accessible.
+        """
+        schema_perms: dict[str, list[PermissionGrant]] = defaultdict(list)
+        table_perms: dict[str, list[PermissionGrant]] = defaultdict(list)
+        catalog_grants: list[PermissionGrant] = []
 
-        def _extract_privs(priv_list: list) -> list[str]:
-            """Extract privilege strings from varying API formats."""
-            result = []
-            for p in priv_list:
-                if isinstance(p, str):
-                    result.append(p)
-                elif isinstance(p, dict):
-                    result.append(p.get("privilege", str(p)))
-                else:
-                    result.append(str(p))
-            return result
+        # Determine which source to use: governance MVs or system tables
+        gov = f"{catalog}.governance"
+        sys = "system.information_schema"
+        test = self._run_sql(f"SELECT 1 FROM {gov}.catalog_privileges LIMIT 1")
+        source = gov if test is not None else sys
+        logger.info(f"Permissions source: {source}")
 
-        for schema_info in self._schemas:
-            data, err = _fetch_grants(
-                f"/api/2.1/unity-catalog/permissions/schema/{catalog}.{schema_info.name}"
-            )
-            if err:
-                errors.append(f"schema {schema_info.name}: {err}")
-                continue
-            grants = []
-            for pa in data.get("privilege_assignments", []):
-                privs = _extract_privs(pa.get("privileges", []))
-                grants.append(PermissionGrant(
-                    principal=pa.get("principal", ""),
-                    privileges=privs,
-                    inherited_from=f"{catalog}.{schema_info.name}",
-                ))
-            schema_perms[schema_info.name] = grants
-
-        for table in self._tables:
-            if table.schema in schema_perms:
-                table.permissions = list(schema_perms[table.schema])
-
-        data, err = _fetch_grants(f"/api/2.1/unity-catalog/permissions/catalog/{catalog}")
-        if err:
-            errors.append(f"catalog: {err}")
-        else:
-            catalog_grants = []
-            for pa in data.get("privilege_assignments", []):
-                privs = _extract_privs(pa.get("privileges", []))
+        # --- catalog-level grants ---
+        rows = self._run_sql(
+            f"SELECT grantor, grantee, privilege_type "
+            f"FROM {source}.catalog_privileges "
+            f"WHERE catalog_name = '{catalog}'"
+        )
+        if rows:
+            grouped: dict[str, list[str]] = defaultdict(list)
+            for row in rows:
+                grouped[row[1]].append(row[2])
+            for principal, privs in grouped.items():
                 catalog_grants.append(PermissionGrant(
-                    principal=pa.get("principal", ""),
-                    privileges=privs,
+                    principal=principal,
+                    privileges=sorted(set(privs)),
                     inherited_from=catalog,
                 ))
-            for table in self._tables:
-                for cg in catalog_grants:
-                    if not any(p.principal == cg.principal for p in table.permissions):
-                        table.permissions.append(cg)
+        else:
+            logger.info("catalog_privileges returned no rows")
 
-        return errors
+        # --- schema-level grants ---
+        rows = self._run_sql(
+            f"SELECT grantor, grantee, privilege_type, schema_name "
+            f"FROM {source}.schema_privileges "
+            f"WHERE catalog_name = '{catalog}'"
+        )
+        if rows:
+            grouped_schema: dict[tuple[str, str], list[str]] = defaultdict(list)
+            for row in rows:
+                grouped_schema[(row[3], row[1])].append(row[2])
+            for (schema_name, principal), privs in grouped_schema.items():
+                schema_perms[schema_name].append(PermissionGrant(
+                    principal=principal,
+                    privileges=sorted(set(privs)),
+                    inherited_from=f"{catalog}.{schema_name}",
+                ))
+
+        # --- table-level grants ---
+        rows = self._run_sql(
+            f"SELECT grantor, grantee, privilege_type, table_schema, table_name "
+            f"FROM {source}.table_privileges "
+            f"WHERE table_catalog = '{catalog}'"
+        )
+        if rows:
+            grouped_table: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+            for row in rows:
+                grouped_table[(row[3], row[4], row[1])].append(row[2])
+            for (schema_name, table_name, principal), privs in grouped_table.items():
+                table_perms[f"{schema_name}.{table_name}"].append(PermissionGrant(
+                    principal=principal,
+                    privileges=sorted(set(privs)),
+                    inherited_from=f"{catalog}.{schema_name}.{table_name}",
+                ))
+
+        # Merge grants onto each table: table-level > schema-level > catalog-level
+        for table in self._tables:
+            merged: dict[str, PermissionGrant] = {}
+
+            for g in catalog_grants:
+                merged[g.principal] = PermissionGrant(
+                    principal=g.principal,
+                    privileges=list(g.privileges),
+                    inherited_from=g.inherited_from,
+                )
+
+            for g in schema_perms.get(table.schema, []):
+                if g.principal in merged:
+                    existing = set(merged[g.principal].privileges)
+                    existing.update(g.privileges)
+                    merged[g.principal].privileges = sorted(existing)
+                    merged[g.principal].inherited_from = g.inherited_from
+                else:
+                    merged[g.principal] = PermissionGrant(
+                        principal=g.principal,
+                        privileges=list(g.privileges),
+                        inherited_from=g.inherited_from,
+                    )
+
+            tkey = f"{table.schema}.{table.name}"
+            for g in table_perms.get(tkey, []):
+                if g.principal in merged:
+                    existing = set(merged[g.principal].privileges)
+                    existing.update(g.privileges)
+                    merged[g.principal].privileges = sorted(existing)
+                    merged[g.principal].inherited_from = g.inherited_from
+                else:
+                    merged[g.principal] = PermissionGrant(
+                        principal=g.principal,
+                        privileges=list(g.privileges),
+                        inherited_from=g.inherited_from,
+                    )
+
+            table.permissions = list(merged.values())
 
     def _fetch_row_counts(self, catalog: str):
-        """Fetch row counts for tables missing them via SQL using the SDK's API client."""
+        """Fetch row counts for tables missing them via SQL."""
         tables_needing_counts = [t for t in self._tables if t.row_count is None]
         if not tables_needing_counts:
             return
 
         for table in tables_needing_counts:
-            try:
-                sql = f"SELECT count(*) as cnt FROM {table.full_name}"
-                raw = self.client.api_client.do(
-                    "POST",
-                    "/api/2.0/sql/statements/",
-                    body={
-                        "statement": sql,
-                        "warehouse_id": WAREHOUSE_ID,
-                        "wait_timeout": "30s",
-                    },
-                )
-                data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-                if data.get("status", {}).get("state") == "SUCCEEDED":
-                    chunks = data.get("result", {}).get("data_array", [])
-                    if chunks:
-                        table.row_count = int(chunks[0][0])
-            except Exception as e:
-                logger.debug(f"Row count query failed for {table.full_name}: {e}")
+            rows = self._run_sql(f"SELECT count(*) as cnt FROM {table.full_name}")
+            if rows:
+                try:
+                    table.row_count = int(rows[0][0])
+                except (ValueError, TypeError, IndexError):
+                    pass
 
     def get_schemas(self) -> list[dict]:
         return [
