@@ -1,6 +1,6 @@
-# UC Data Duplicates
+# UC Data Quality Duplicates
 
-A Databricks App that scans Unity Catalog metadata across any accessible catalog to find duplicate datasets, recommends gold-standard tables, and surfaces group-level access permissions — helping data architects and engineers clean up data sprawl before it reaches analysts.
+A Databricks App that scans Unity Catalog metadata across all accessible catalogs to find duplicate datasets, recommends gold-standard tables, and surfaces group-level access permissions — helping data architects and engineers clean up data sprawl before it reaches analysts.
 
 ## Features
 
@@ -22,7 +22,7 @@ A Databricks App that scans Unity Catalog metadata across any accessible catalog
 │  │   Frontend    │       │     FastAPI Backend           │ │
 │  │  (Vanilla JS) │◄────►│                              │ │
 │  │              │       │  /api/catalog/list            │ │
-│  │  Dashboard   │       │  /api/catalog/scan?catalog=X  │ │
+│  │  Dashboard   │       │  /api/catalog/scan-all         │ │
 │  │  Catalog     │       │  /api/duplicates/*            │ │
 │  │  Duplicates  │       │  /api/compare/*               │ │
 │  │  Compare     │       │                              │ │
@@ -45,7 +45,7 @@ A Databricks App that scans Unity Catalog metadata across any accessible catalog
 ## Project structure
 
 ```
-uc-data-duplicates/
+uc-data-quality-duplicates/
 ├── databricks.yml          # DAB bundle config (targets, variables)
 ├── app.yaml                # App runtime config (command, env vars)
 ├── app.py                  # FastAPI entrypoint
@@ -56,7 +56,7 @@ uc-data-duplicates/
 │   ├── duplicates.py       # Duplicate detection + gold standard scoring
 │   ├── comparator.py       # Table comparison + sample data
 │   └── routes/
-│       ├── catalog.py      # /api/catalog/*  (list, scan, schemas, tables)
+│       ├── catalog.py      # /api/catalog/*  (list, scan-all, schemas, tables)
 │       ├── duplicates.py   # /api/duplicates/*
 │       └── compare.py      # /api/compare/*
 ├── frontend/
@@ -136,7 +136,7 @@ GRANT BROWSE ON METASTORE TO `<SP_ID>`;
 ### 1. Clone and authenticate
 
 ```bash
-git clone <repo-url> && cd uc-data-duplicates
+git clone https://github.com/richardli29/uc-data-quality-duplicates.git && cd uc-data-quality-duplicates
 
 databricks auth login --host https://<WORKSPACE>.cloud.databricks.com
 ```

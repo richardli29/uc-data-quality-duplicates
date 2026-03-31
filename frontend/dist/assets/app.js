@@ -372,6 +372,103 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// ===== Compare — helpers for cascading selectors =====
+function catalogsForPicker() {
+  return [...new Set(state.tables.map(t => t.catalog))].sort();
+}
+
+function schemasForCatalog(cat) {
+  return [...new Set(state.tables.filter(t => t.catalog === cat).map(t => t.schema))].sort();
+}
+
+function tablesForSchema(cat, sch) {
+  return state.tables.filter(t => t.catalog === cat && t.schema === sch).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function renderPickerOptions(items, selected, labelFn = x => x) {
+  return items.map(i => {
+    const val = typeof i === 'string' ? i : i.name;
+    const label = typeof i === 'string' ? i : labelFn(i);
+    return `<option value="${val}" ${val === selected ? 'selected' : ''}>${label}</option>`;
+  }).join('');
+}
+
+function buildPickerHtml(side, cat, sch, tbl) {
+  const catalogs = catalogsForPicker();
+  const schemas = cat ? schemasForCatalog(cat) : [];
+  const tables = (cat && sch) ? tablesForSchema(cat, sch) : [];
+
+  return `
+    <div class="picker-side">
+      <span class="picker-label">Table ${side.toUpperCase()}</span>
+      <div class="picker-row">
+        <div class="picker-field">
+          <span class="field-label">Catalog</span>
+          <select id="cat-${side}">
+            <option value="">Select catalog\u2026</option>
+            ${renderPickerOptions(catalogs, cat)}
+          </select>
+        </div>
+        <div class="picker-field">
+          <span class="field-label">Schema</span>
+          <select id="sch-${side}" ${!cat ? 'disabled' : ''}>
+            <option value="">Select schema\u2026</option>
+            ${renderPickerOptions(schemas, sch)}
+          </select>
+        </div>
+        <div class="picker-field">
+          <span class="field-label">Table</span>
+          <select id="tbl-${side}" ${!sch ? 'disabled' : ''}>
+            <option value="">Select table\u2026</option>
+            ${renderPickerOptions(tables, tbl, t => t.name)}
+          </select>
+        </div>
+      </div>
+      ${(cat && sch && tbl) ? `<div class="picker-selected">${cat}.${sch}.${tbl}</div>` : ''}
+    </div>
+  `;
+}
+
+let _pickA = { cat: null, sch: null, tbl: null };
+let _pickB = { cat: null, sch: null, tbl: null };
+
+function bindPicker(side, pick) {
+  const catSel = $(`cat-${side}`);
+  const schSel = $(`sch-${side}`);
+  const tblSel = $(`tbl-${side}`);
+
+  catSel.onchange = () => {
+    pick.cat = catSel.value || null;
+    pick.sch = null;
+    pick.tbl = null;
+    refreshPickers();
+  };
+  schSel.onchange = () => {
+    pick.sch = schSel.value || null;
+    pick.tbl = null;
+    refreshPickers();
+  };
+  tblSel.onchange = () => {
+    pick.tbl = tblSel.value || null;
+    refreshPickers();
+  };
+}
+
+function refreshPickers() {
+  const form = $('compare-form');
+  if (!form) return;
+  form.innerHTML = `
+    <div class="picker-grid">
+      ${buildPickerHtml('a', _pickA.cat, _pickA.sch, _pickA.tbl)}
+      ${buildPickerHtml('b', _pickB.cat, _pickB.sch, _pickB.tbl)}
+    </div>
+    <button class="btn btn-primary" id="compare-go" ${!(_pickA.tbl && _pickB.tbl) ? 'disabled' : ''}>Compare</button>
+  `;
+  bindPicker('a', _pickA);
+  bindPicker('b', _pickB);
+  $('compare-go').onclick = doCompare;
+}
+
 // ===== Compare =====
 async function renderCompare() {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
@@ -387,38 +484,17 @@ async function renderCompare() {
     return;
   }
 
+  _pickA = { cat: c1 || null, sch: s1 || null, tbl: t1 || null };
+  _pickB = { cat: c2 || null, sch: s2 || null, tbl: t2 || null };
+
   main().innerHTML = `
     <h2 class="page-title">Compare Tables</h2>
     <p class="page-desc">Side-by-side schema diff, permissions, and sample data comparison.</p>
-    <div class="compare-selector" id="compare-form">
-      <div class="field-group">
-        <span class="field-label">Table A</span>
-        <select id="sel-a">
-          <option value="">Select table\u2026</option>
-          ${state.tables.map(t => {
-            const val = `${t.catalog}|${t.schema}|${t.name}`;
-            const sel = (t.catalog === c1 && t.schema === s1 && t.name === t1) ? 'selected' : '';
-            return `<option value="${val}" ${sel}>${t.catalog}.${t.schema}.${t.name}</option>`;
-          }).join('')}
-        </select>
-      </div>
-      <div class="field-group">
-        <span class="field-label">Table B</span>
-        <select id="sel-b">
-          <option value="">Select table\u2026</option>
-          ${state.tables.map(t => {
-            const val = `${t.catalog}|${t.schema}|${t.name}`;
-            const sel = (t.catalog === c2 && t.schema === s2 && t.name === t2) ? 'selected' : '';
-            return `<option value="${val}" ${sel}>${t.catalog}.${t.schema}.${t.name}</option>`;
-          }).join('')}
-        </select>
-      </div>
-      <button class="btn btn-primary" id="compare-go">Compare</button>
-    </div>
+    <div id="compare-form"></div>
     <div id="compare-result"></div>
   `;
 
-  $('compare-go').onclick = doCompare;
+  refreshPickers();
 
   if (c1 && s1 && t1 && c2 && s2 && t2) {
     doCompare();
@@ -426,11 +502,9 @@ async function renderCompare() {
 }
 
 async function doCompare() {
-  const a = $('sel-a').value.split('|');
-  const b = $('sel-b').value.split('|');
-  if (a.length < 3 || b.length < 3) { alert('Select two tables'); return; }
-  const [c1, s1, t1] = a;
-  const [c2, s2, t2] = b;
+  const { cat: c1, sch: s1, tbl: t1 } = _pickA;
+  const { cat: c2, sch: s2, tbl: t2 } = _pickB;
+  if (!c1 || !s1 || !t1 || !c2 || !s2 || !t2) { alert('Select two tables'); return; }
 
   const el = $('compare-result');
   el.innerHTML = loading('Comparing tables\u2026');
