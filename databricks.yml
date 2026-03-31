@@ -19,6 +19,6 @@ targets:
   dev:
     default: true
     workspace:
-      host: https://fevm-classic-stable-j3egkl.cloud.databricks.com
+      host: https://<YOUR_WORKSPACE>.cloud.databricks.com
     variables:
-      warehouse_id: ba6bf944ec7bf0ff
+      warehouse_id: <YOUR_WAREHOUSE_ID>
