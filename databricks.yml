@@ -7,8 +7,8 @@ variables:
 
 resources:
   apps:
-    dfe-data-quality:
-      name: dfe-data-quality
+    uc_data_duplicates:
+      name: uc-data-duplicates
       description: >
         Unity Catalog Data Quality Explorer — scans metadata across any catalog,
         detects duplicate datasets, recommends gold-standard tables, and surfaces
@@ -19,6 +19,6 @@ targets:
   dev:
     default: true
     workspace:
-      host: https://fevm-uk-pubsec-demo.cloud.databricks.com/
+      host: https://<YOUR_WORKSPACE>.cloud.databricks.com
     variables:
-      warehouse_id: 933e5e966266a690
+      warehouse_id: <YOUR_WAREHOUSE_ID>
