@@ -7,7 +7,7 @@ A Databricks App that scans Unity Catalog metadata across all accessible catalog
 | Feature | Description |
 |---|---|
 | **Multi-Catalog Scanner** | Scans every accessible catalog in one click — schemas, tables, columns, types, row counts, comments, timestamps. Shows which catalogs were scanned with per-catalog breakdowns. |
-| **Permissions Viewer** | Shows which groups and users have READ / WRITE access to each table via `system.information_schema` — no `MANAGE` privilege needed. |
+| **Permissions Viewer** | Shows which groups and users have READ / WRITE access to each table via governance materialized views — no `MANAGE` privilege needed. |
 | **Duplicate Detection** | Clusters tables that represent the same entity using column-name Jaccard similarity, type compatibility, and fuzzy table-name matching. Groups are labelled by the common entity name (e.g. "Students", "Exam Results") rather than generic IDs. |
 | **Gold Standard Scoring** | Ranks each duplicate on completeness, documentation, naming convention, schema tier, freshness, and row count to recommend the canonical dataset. |
 | **Table Comparison** | Side-by-side column diff, permissions diff, and sample data for any two tables. |
@@ -37,7 +37,7 @@ A Databricks App that scans Unity Catalog metadata across all accessible catalog
                     │                                  │
                     │  Unity Catalog SDK  (metadata)   │
                     │  SQL Statement API  (queries)    │
-                    │  system.information_schema       │
+                    │  governance MVs                  │
                     │    (permissions — no MANAGE)     │
                     └──────────────────────────────────┘
 ```
@@ -63,7 +63,7 @@ uc-data-quality-duplicates/
 │   └── dist/               # Static SPA (HTML/CSS/JS, no build step)
 └── scripts/
     ├── deploy.sh                  # One-command deploy (bundle + app source)
-    ├── create_governance_views.sql # MVs for permissions (run once per catalog)
+    ├── create_governance_mvs.sql  # MVs mirroring system.information_schema (run once)
     ├── generate_data.py           # Test data generator (Python + CLI)
     └── generate_data.sql          # Test data generator (pure SQL)
 ```
@@ -75,12 +75,12 @@ uc-data-quality-duplicates/
 - A Databricks workspace with:
   - Unity Catalog enabled
   - A SQL warehouse (Serverless or Pro)
-  - System tables enabled (for permissions via `system.information_schema`)
+  - The `catalog_40_copper_uc_metadata` catalog (for governance MVs)
   - Permission to create Apps
 
 ## Permissions
 
-The app's service principal needs **no `MANAGE` privilege**. Permissions are read via `system.information_schema` SQL views instead of the UC Permissions REST API.
+The app's service principal needs **no `MANAGE` privilege**. Permissions are read from governance materialized views in `catalog_40_copper_uc_metadata.governance` — mirrors of `system.information_schema` that provide definer-rights access.
 
 ### Required grants for the service principal
 
@@ -89,36 +89,36 @@ The app's service principal needs **no `MANAGE` privilege**. Permissions are rea
 | `USE CATALOG` | Each catalog to scan | List schemas and tables |
 | `USE SCHEMA` | Each schema to scan | List tables within schemas |
 | `SELECT` | Each schema to scan | Row counts and sample data queries |
-| `USE SCHEMA` | `<catalog>.governance` | Access governance materialized views |
-| `SELECT` | `<catalog>.governance` | Read permissions (catalog/schema/table grants) |
+| `USE CATALOG` | `catalog_40_copper_uc_metadata` | Access the app catalog |
+| `USE SCHEMA` | `catalog_40_copper_uc_metadata.governance` | Access governance MVs |
+| `SELECT` | `catalog_40_copper_uc_metadata.governance` | Read permissions (catalog/schema/table grants) |
 | `CAN_USE` | SQL warehouse | Execute SQL queries |
 
 ### Quick setup
 
-**Step 1 — Create governance materialized views** (run once per catalog):
+**Step 1 — Create governance materialized views** (run once):
 
-Open `scripts/create_governance_views.sql` in a Databricks SQL editor, set the widget to your catalog name, and run all statements. This creates MVs in `<catalog>.governance` that mirror `system.information_schema` privilege tables using **definer rights** — so the SP can read permissions without needing access to the `system` catalog.
+Open `scripts/create_governance_mvs.sql` in a Databricks SQL editor and run all statements. This creates materialized views in `catalog_40_copper_uc_metadata.governance` that mirror every `system.information_schema` view. The executing user becomes the schema owner (definer) — their privileges determine what metadata is visible at refresh time.
 
-> Any user with `SELECT` on `system.information_schema` can create these MVs (typically all workspace users).
-
-**Step 2 — Grant the SP access** (per catalog):
+**Step 2 — Grant the SP access** (replace `<SP_ID>` and `<CATALOG>`):
 
 ```sql
--- Catalog + schema access
+-- Catalog + schema access (repeat per catalog/schema to scan)
 GRANT USE CATALOG ON CATALOG <CATALOG> TO `<SP_ID>`;
-GRANT USE SCHEMA ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;  -- repeat per schema
-GRANT SELECT ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;      -- repeat per schema
+GRANT USE SCHEMA ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;
 
 -- Governance MVs (permissions viewer)
-GRANT USE SCHEMA ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
-GRANT SELECT ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
+GRANT USE CATALOG ON CATALOG catalog_40_copper_uc_metadata TO `<SP_ID>`;
+GRANT USE SCHEMA ON SCHEMA catalog_40_copper_uc_metadata.governance TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA catalog_40_copper_uc_metadata.governance TO `<SP_ID>`;
 ```
 
 ### How permissions reading works
 
-The app tries three sources in order:
-1. `<catalog>.governance.*_privileges` — materialized views (recommended, no MANAGE needed)
-2. `system.information_schema.*_privileges` — direct system tables (requires metastore admin to grant)
+The app tries two sources in order:
+1. `catalog_40_copper_uc_metadata.governance.*_privileges` — materialized views with definer-rights access (recommended)
+2. `system.information_schema.*_privileges` — direct system tables (fallback; requires metastore admin to grant)
 3. Degrades gracefully — shows "No grants found" if neither source is accessible
 
 ### Alternative: BROWSE privilege
@@ -238,9 +238,10 @@ GRANT USE CATALOG ON CATALOG <CATALOG> TO `<SP_ID>`;
 GRANT USE SCHEMA ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;
 GRANT SELECT ON SCHEMA <CATALOG>.<schema> TO `<SP_ID>`;
 
--- Access to governance MVs for permissions (no MANAGE needed)
-GRANT USE SCHEMA ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
-GRANT SELECT ON SCHEMA <CATALOG>.governance TO `<SP_ID>`;
+-- Access to governance MVs
+GRANT USE CATALOG ON CATALOG catalog_40_copper_uc_metadata TO `<SP_ID>`;
+GRANT USE SCHEMA ON SCHEMA catalog_40_copper_uc_metadata.governance TO `<SP_ID>`;
+GRANT SELECT ON SCHEMA catalog_40_copper_uc_metadata.governance TO `<SP_ID>`;
 ```
 
 And grant `CAN_USE` on the SQL warehouse:
